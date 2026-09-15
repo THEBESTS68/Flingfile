@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ฝากไฟล์ชั่วคราว</title>
+    <!-- หากต้องการตกแต่งให้สวยขึ้น สามารถนำ Tailwind CSS มาใช้ตรงนี้ได้ -->
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 50px; background-color: #f3f4f6; }
+        .box { background: white; border-radius: 10px; padding: 30px; margin: 20px auto; max-width: 400px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        button { background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-top: 10px;}
+        button:hover { background: #2563eb; }
+        input { padding: 8px; width: 80%; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px;}
+    </style>
+</head>
+<body>
+
+    <h1>ส่งไฟล์ด่วน 🚀</h1>
+
+    <div class="box">
+        <h3>อัปโหลดไฟล์</h3>
+        <input type="file" id="fileInput">
+        <button onclick="uploadFile()" id="uploadBtn">อัปโหลดเลย</button>
+        <p id="uploadResult" style="color: #16a34a; font-weight: bold; font-size: 1.2rem; margin-top: 15px;"></p>
+    </div>
+
+    <div class="box">
+        <h3>รับไฟล์</h3>
+        <input type="text" id="codeInput" placeholder="กรอกรหัส 6 หลัก" maxlength="6">
+        <button onclick="downloadFile()">ดาวน์โหลด</button>
+    </div>
+
+    <script>
+        // ชี้ไปที่ API ในโปรเจคเดียวกัน (ผ่าน vercel.json)
+        const backendUrl = "/api";
+
+        async function uploadFile() {
+            const file = document.getElementById('fileInput').files[0];
+            const btn = document.getElementById('uploadBtn');
+            if (!file) return alert("กรุณาเลือกไฟล์ก่อน!");
+
+            btn.innerText = "กำลังอัปโหลด...";
+            btn.disabled = true;
+
+            const formData = new FormData();
+            formData.append("file", file);
+
+            try {
+                const response = await fetch(`${backendUrl}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                document.getElementById('uploadResult').innerText = `รหัสของคุณคือ: ${data.code}`;
+            } catch (error) {
+                alert("เกิดข้อผิดพลาดในการอัปโหลด");
+            } finally {
+                btn.innerText = "อัปโหลดเลย";
+                btn.disabled = false;
+            }
+        }
+
+        function downloadFile() {
+            const code = document.getElementById('codeInput').value.toUpperCase();
+            if (!code) return alert("กรุณากรอกรหัส!");
+            window.location.href = `${backendUrl}/download/${code}`;
+        }
+    </script>
+</body>
+</html>
