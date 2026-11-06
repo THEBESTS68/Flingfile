@@ -40,10 +40,12 @@ svg { flex: none; }
 
 /* ---------- background ---------- */
 .aurora { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
-.blob { position: absolute; width: 46vmax; height: 46vmax; border-radius: 50%; filter: blur(80px); opacity: .5; mix-blend-mode: screen; animation: drift 22s var(--ease) infinite alternate; }
-.b1 { background: #5b5bf7; top: -16vmax; left: -10vmax; }
-.b2 { background: #0fb5a5; bottom: -20vmax; right: -12vmax; animation-duration: 26s; animation-delay: -6s; }
-.b3 { background: #d9468f; top: 30%; left: 55%; width: 30vmax; height: 30vmax; opacity: .3; animation-duration: 30s; animation-delay: -12s; }
+/* แสงพื้นหลัง: ใช้ radial-gradient ให้ขอบนุ่มเอง แทน filter: blur(80px) + mix-blend-mode
+   (แบบเดิม GPU ต้องเบลอภาพขนาดเต็มจอใหม่ทุกเฟรม = มือถือกระตุก) — แบบนี้แค่เลื่อนภาพที่วาดไว้แล้ว */
+.blob { position: absolute; width: 62vmax; height: 62vmax; border-radius: 50%; opacity: .55; will-change: transform; animation: drift 22s var(--ease) infinite alternate; }
+.b1 { background: radial-gradient(closest-side, rgba(91,91,247,.95), rgba(91,91,247,.45) 45%, rgba(91,91,247,0)); top: -24vmax; left: -18vmax; }
+.b2 { background: radial-gradient(closest-side, rgba(15,181,165,.95), rgba(15,181,165,.45) 45%, rgba(15,181,165,0)); bottom: -28vmax; right: -20vmax; animation-duration: 26s; animation-delay: -6s; }
+.b3 { background: radial-gradient(closest-side, rgba(217,70,143,.9), rgba(217,70,143,.4) 45%, rgba(217,70,143,0)); top: 24%; left: 50%; width: 42vmax; height: 42vmax; opacity: .35; animation-duration: 30s; animation-delay: -12s; }
 @keyframes drift { 50% { transform: translate(6vmax, 4vmax) scale(1.12); } 100% { transform: translate(-4vmax, 8vmax) scale(.94); } }
 .grain { position: absolute; inset: 0; background-image: radial-gradient(rgba(255,255,255,.06) 1px, transparent 1px); background-size: 22px 22px; mask-image: radial-gradient(ellipse at center, #000 30%, transparent 75%); -webkit-mask-image: radial-gradient(ellipse at center, #000 30%, transparent 75%); }
 
@@ -63,7 +65,7 @@ svg { flex: none; }
 .chip button { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; color: var(--faint); transition: background .2s, color .2s; }
 .chip button:hover { background: rgba(255,255,255,.12); color: #fff; }
 .chip button svg { width: 12px; height: 12px; }
-.glass-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 14px; font-weight: 600; font-size: 14px; background: rgba(255,255,255,.08); border: 1px solid var(--stroke); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); transition: background .25s, transform .3s var(--spring), border-color .25s; }
+.glass-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 14px; font-weight: 600; font-size: 14px; background: rgba(255,255,255,.1); border: 1px solid var(--stroke); transition: background .25s, transform .3s var(--spring), border-color .25s; }
 .glass-btn:hover { background: rgba(255,255,255,.14); border-color: var(--stroke-strong); transform: translateY(-1px); }
 .glass-btn svg { width: 18px; height: 18px; }
 
@@ -86,7 +88,7 @@ svg { flex: none; }
 }
 .me-orb:hover { transform: scale(1.06) rotate(-4deg); }
 .me-orb span { filter: drop-shadow(0 6px 10px rgba(0,0,0,.3)); }
-.pulse { position: absolute; top: 54px; left: 50%; width: 108px; height: 108px; margin: -54px 0 0 -54px; border-radius: 50%; border: 1.5px solid rgba(124,140,255,.5); animation: radar 4.5s cubic-bezier(.2,.6,.3,1) infinite; pointer-events: none; }
+.pulse { position: absolute; top: 54px; left: 50%; width: 108px; height: 108px; margin: -54px 0 0 -54px; border-radius: 50%; border: 1.5px solid rgba(124,140,255,.5); animation: radar 4.5s cubic-bezier(.2,.6,.3,1) infinite; pointer-events: none; will-change: transform, opacity; }
 .pulse:nth-child(2) { animation-delay: 1.5s; }
 .pulse:nth-child(3) { animation-delay: 3s; }
 @keyframes radar { from { transform: scale(1); opacity: .9; } to { transform: scale(4.2); opacity: 0; } }
@@ -102,15 +104,16 @@ svg { flex: none; }
 }
 .peer-in { display: flex; flex-direction: column; align-items: center; width: 100%; animation: peerIn .7s var(--spring) both; }
 .peer.leaving .peer-in { animation: peerOut .45s var(--ease) forwards; }
-@keyframes peerIn { from { opacity: 0; transform: scale(.3); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
-@keyframes peerOut { to { opacity: 0; transform: scale(.4); filter: blur(6px); } }
+@keyframes peerIn { from { opacity: 0; transform: scale(.3); } to { opacity: 1; transform: none; } }
+@keyframes peerOut { to { opacity: 0; transform: scale(.4); } }
 .peer-orb {
   --h: 230;
   position: relative; width: var(--orb); height: var(--orb); border-radius: 50%; display: grid; place-items: center; font-size: 38px;
-  background: radial-gradient(circle at 30% 25%, rgba(255,255,255,.3), transparent 55%), linear-gradient(135deg, hsla(var(--h), 85%, 65%, .55), hsla(calc(var(--h) + 50), 80%, 55%, .35));
+  /* ไม่ใช้ backdrop-filter: พื้นหลังขยับตลอด = ต้องเบลอใหม่ทุกเฟรมทุกลูก -> ใช้สีทึบขึ้นนิดแทน หน้าตาใกล้เคียงเดิม */
+  background: radial-gradient(circle at 30% 25%, rgba(255,255,255,.3), transparent 55%), linear-gradient(135deg, hsla(var(--h), 70%, 58%, .72), hsla(calc(var(--h) + 50), 65%, 45%, .55));
   border: 1px solid var(--stroke-strong);
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   box-shadow: 0 16px 40px -14px hsla(var(--h), 90%, 60%, .8), inset 0 1px 0 rgba(255,255,255,.3);
+  will-change: transform;
   transition: transform .4s var(--spring), box-shadow .3s;
   animation: float 6s ease-in-out infinite; animation-delay: var(--delay, 0s);
 }
@@ -156,9 +159,11 @@ svg { flex: none; }
 @keyframes popOut { to { opacity: 0; transform: scale(.92); } }
 
 /* ---------- modal ---------- */
-.modal-wrap { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 16px; background: rgba(5, 8, 20, .45); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); animation: fadeIn .3s var(--ease) both; }
+.modal-wrap { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 16px; background: rgba(5, 8, 20, .62); animation: fadeIn .3s var(--ease) both; }
 .modal-wrap.out { animation: fadeOut .25s var(--ease) forwards; }
-.modal { width: 100%; max-width: 420px; max-height: calc(100dvh - 32px); overflow: auto; border-radius: 26px; padding: 22px; animation: modalIn .5s var(--spring) both; }
+/* หน้าต่างใช้กระจกสีเกือบทึบแทนการเบลอฉากหลังทั้งจอ: อ่านง่าย และ GPU มือถือไม่ต้องเบลอใหม่ทุกเฟรม */
+.modal { width: 100%; max-width: 420px; max-height: calc(100dvh - 32px); overflow: auto; border-radius: 26px; padding: 22px; animation: modalIn .5s var(--spring) both;
+  background: linear-gradient(160deg, rgba(44, 48, 86, .96), rgba(20, 24, 46, .96)); backdrop-filter: none; -webkit-backdrop-filter: none; }
 .modal-wrap.out .modal { animation: modalOut .25s var(--ease) forwards; }
 @keyframes modalIn { from { opacity: 0; transform: translateY(24px) scale(.94); } to { opacity: 1; transform: none; } }
 @keyframes modalOut { to { opacity: 0; transform: translateY(12px) scale(.97); } }
@@ -271,6 +276,20 @@ textarea.field { min-height: 120px; }
   .tiles, .otp { gap: 5px; }
   .tray { right: 12px; left: 12px; width: auto; bottom: 12px; }
   .tray-toggle { right: 14px; }
+}
+/* ---------- ประสิทธิภาพ ---------- */
+button, a, input, textarea, label { touch-action: manipulation; } /* ตัด delay การแตะบนมือถือ */
+/* เปิดหน้าต่าง (รับไฟล์/ข้อความ/จับคู่) อยู่: หยุดแอนิเมชันพื้นหลัง ให้กระจกฝ้าของหน้าต่างไม่ต้องเบลอใหม่ทุกเฟรม */
+body.modal-open .blob, body.modal-open .pulse, body.modal-open .peer-orb, body.modal-open .dots i { animation-play-state: paused; }
+/* อุปกรณ์จอสัมผัส (มือถือ/แท็บเล็ต): ลดงาน GPU ลงอีก */
+@media (pointer: coarse) {
+  .blob { animation-duration: 40s; }
+  .b3 { display: none; }                          /* เหลือแสง 2 ดวง */
+  .glass { backdrop-filter: blur(14px) saturate(140%); -webkit-backdrop-filter: blur(14px) saturate(140%); }
+  .toast, .tray-toggle { backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+  .peer-ring .bar { filter: none; }               /* ไม่ต้องวาดเงาเรืองแสงใหม่ทุกครั้งที่ % ขยับ */
+  .pulse:nth-child(3) { display: none; }          /* คลื่นเรดาร์ 2 วง */
+  .orbit.o2 { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
