@@ -12,9 +12,9 @@
 
 | ไฟล์ | หน้าที่ |
 |---|---|
-| `index.html` | โครงหน้าเว็บ |
-| `assets/style.css` | ธีม Glassmorphism + แอนิเมชัน |
-| `assets/app.js` | ค้นหาอุปกรณ์, WebRTC, โปรโตคอลส่งไฟล์, ถาดไฟล์ที่ได้รับ |
+| `public/index.html` | โครงหน้าเว็บ |
+| `public/assets/style.css` | ธีม Glassmorphism + แอนิเมชัน |
+| `public/assets/app.js` | ค้นหาอุปกรณ์, WebRTC, โปรโตคอลส่งไฟล์, ถาดไฟล์ที่ได้รับ |
 | `api/index.py` | FastAPI: `/api/config` (ค่า Supabase + ICE servers), `/api/room` (ห้องของเครือข่ายเดียวกันจาก hash ของ Public IP) |
 
 ## ตั้งค่า

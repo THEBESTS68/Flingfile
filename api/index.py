@@ -80,9 +80,11 @@ def network_room(request: Request):
     return JSONResponse({"room": f"net-{room}"}, headers={"Cache-Control": "no-store"})
 
 
-# ---------- ใช้ตอนรันในเครื่องเท่านั้น (บน Vercel ไฟล์ static ถูกเสิร์ฟโดย CDN) ----------
-if not os.environ.get("VERCEL"):
+# ---------- หน้าเว็บ (public/) ----------
+# บน Vercel (FastAPI preset) ไฟล์ใน public/ ถูกเสิร์ฟจาก CDN ก่อนถึงแอป
+# ส่วนนี้เป็นทางสำรอง + ใช้ตอนรันในเครื่อง ต้องอยู่ท้ายสุดเพื่อไม่บัง /api/*
+PUBLIC = Path(__file__).resolve().parent.parent / "public"
+if PUBLIC.is_dir():
     from fastapi.staticfiles import StaticFiles
 
-    ROOT = Path(__file__).resolve().parent.parent
-    app.mount("/", StaticFiles(directory=ROOT, html=True), name="static")
+    app.mount("/", StaticFiles(directory=PUBLIC, html=True), name="static")
