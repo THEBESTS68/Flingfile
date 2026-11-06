@@ -17,8 +17,17 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI(title="Flingfile")
 
-SUPABASE_URL = (os.environ.get("SUPABASE_URL") or "").rstrip("/")
-SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY") or ""
+# ค่าเริ่มต้น: โปรเจกต์ Supabase "flingfile" (ใช้แค่ Realtime)
+# publishable key ออกแบบมาให้เปิดเผยได้ (ถูกส่งไปที่เบราว์เซอร์อยู่แล้ว)
+DEFAULT_SUPABASE_URL = "https://qhhdyhepygkfpyhjocuu.supabase.co"
+DEFAULT_SUPABASE_KEY = "sb_publishable_ZqnQ9LAcg4Wfxk8YZGHV3g_mYul2BO9"
+
+# ใช้ค่าจาก env เป็นคู่ก็ต่อเมื่อมี SUPABASE_ANON_KEY (กัน URL เก่าจับคู่ผิดกับ key ใหม่)
+if os.environ.get("SUPABASE_ANON_KEY"):
+    SUPABASE_URL = (os.environ.get("SUPABASE_URL") or DEFAULT_SUPABASE_URL).rstrip("/")
+    SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"]
+else:
+    SUPABASE_URL, SUPABASE_ANON_KEY = DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY
 ROOM_SALT = os.environ.get("ROOM_SALT") or SUPABASE_ANON_KEY[-16:] or "flingfile"
 
 
@@ -80,9 +89,11 @@ def network_room(request: Request):
     return JSONResponse({"room": f"net-{room}"}, headers={"Cache-Control": "no-store"})
 
 
-# ---------- ใช้ตอนรันในเครื่องเท่านั้น (บน Vercel ไฟล์ static ถูกเสิร์ฟโดย CDN) ----------
-if not os.environ.get("VERCEL"):
+# ---------- หน้าเว็บ (public/) ----------
+# บน Vercel (FastAPI preset) ไฟล์ใน public/ ถูกเสิร์ฟจาก CDN ก่อนถึงแอป
+# ส่วนนี้เป็นทางสำรอง + ใช้ตอนรันในเครื่อง ต้องอยู่ท้ายสุดเพื่อไม่บัง /api/*
+PUBLIC = Path(__file__).resolve().parent.parent / "public"
+if PUBLIC.is_dir():
     from fastapi.staticfiles import StaticFiles
 
-    ROOT = Path(__file__).resolve().parent.parent
-    app.mount("/", StaticFiles(directory=ROOT, html=True), name="static")
+    app.mount("/", StaticFiles(directory=PUBLIC, html=True), name="static")
