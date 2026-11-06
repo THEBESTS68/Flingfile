@@ -10,10 +10,14 @@
   "use strict";
 
   /* ================= constants & utils ================= */
-  const CHUNK = 64 * 1024;            // ขนาดชิ้นที่ส่งต่อครั้ง (ปลอดภัยทุกเบราว์เซอร์)
-  const READ = 1024 * 1024;           // อ่านไฟล์ทีละ 1MB
-  const HIGH_WATER = 8 * 1024 * 1024; // buffer ของ DataChannel เกินนี้ให้รอ
-  const SPILL = 16 * 1024 * 1024;     // รวม chunk เป็น Blob ทุก 16MB (ให้เบราว์เซอร์ย้ายลงดิสก์ได้)
+  // ---- ความเร็ว (ค่าที่วัดแล้วเร็วและนิ่งที่สุด — ดู README หัวข้อความเร็ว) ----
+  // ชิ้นละ 64KB: ใหญ่กว่านี้ไม่ได้เร็วขึ้น และ Safari รับได้ราว 64KB (ถ้าอีกฝ่ายรับได้น้อยกว่าก็ลดลงตาม)
+  const CHUNK = 64 * 1024, CHUNK_MIN = 16 * 1024;
+  const READ = 4 * 1024 * 1024;        // อ่านไฟล์ทีละ 4MB และอ่านช่วงถัดไปล่วงหน้าระหว่างส่ง
+  const HIGH_WATER = 8 * 1024 * 1024;  // เติมคิวได้ถึง 8MB (คิวใหญ่กว่านี้วัดแล้วช้าลงและไม่นิ่ง)
+  const LOW_WATER = 1024 * 1024;       // คิวลดต่ำกว่า 1MB ค่อยเติมต่อ
+  const SPILL = 32 * 1024 * 1024;      // รวม chunk เป็น Blob ทุก 32MB (ให้เบราว์เซอร์ย้ายลงดิสก์ได้)
+  const FORCE_RELAY = new URLSearchParams(location.search).get("relay") === "1"; // ?relay=1 ทดสอบ TURN
   const ZIP_LIMIT = 1024 * 1024 * 1024;
   const AUTOSAVE_MAX = 5;
 
@@ -255,7 +259,7 @@
     orb.onclick = () => onPeerClick(p.info.id, orb);
     orb.oncontextmenu = (e) => { e.preventDefault(); composeText(p.info.id); };
     let depth = 0;
-    el.addEventListener("dragenter", (e) => { e.preventDefault(); depth++; el.classList.add("drag"); });
+    el.addEventListener("dragenter", (e) => { e.preventDefault(); if (!depth++) getConn(p.info.id); el.classList.add("drag"); });
     el.addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; el.classList.remove("drag"); } });
     el.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
     el.addEventListener("drop", async (e) => {
@@ -316,6 +320,7 @@
     const p = peers.get(id);
     if (!p) return;
     if (pendingFiles) { const f = pendingFiles; clearPending(); return queueSend(id, f); }
+    if (!p.busy) getConn(id); // อุ่นเครื่อง: เริ่มต่อ P2P ทันทีระหว่างที่ผู้ใช้กำลังเลือกไฟล์
     if (p.busy && p.cancel) return confirmCancel(id);
     showPopover(id, anchor);
   }
@@ -407,11 +412,21 @@
       this.waiters = [];
       this.cancelled = new Set();
       this.dead = false;
-      const pc = this.pc = new RTCPeerConnection({ iceServers: CFG.ice_servers });
+      this.route = null;      // "direct" | "relay" — รู้หลังเชื่อมต่อแล้ว
+      this.chunk = CHUNK;
+      const pc = this.pc = new RTCPeerConnection({ iceServers: CFG.ice_servers, iceTransportPolicy: FORCE_RELAY ? "relay" : "all" });
       const dc = this.dc = pc.createDataChannel("fling", { negotiated: true, id: 0, ordered: true });
       dc.binaryType = "arraybuffer";
-      dc.bufferedAmountLowThreshold = 1024 * 1024;
-      this.opened = new Promise((res, rej) => { dc.onopen = res; this.rejectOpen = rej; });
+      dc.bufferedAmountLowThreshold = LOW_WATER;
+      this.opened = new Promise((res, rej) => {
+        dc.onopen = () => {
+          const max = pc.sctp?.maxMessageSize;
+          this.chunk = max ? Math.max(CHUNK_MIN, Math.min(CHUNK, max)) : CHUNK;
+          this.detectRoute();
+          res();
+        };
+        this.rejectOpen = rej;
+      });
       this.opened.catch(() => {});
       dc.onmessage = (e) => onData(this, e.data);
       dc.onclose = () => this.kill("closed");
@@ -422,7 +437,17 @@
         try { makingOffer = true; await pc.setLocalDescription(); signal({ description: pc.localDescription.toJSON() }); }
         catch (e) { console.warn(e); } finally { makingOffer = false; }
       };
-      pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") this.kill("failed"); };
+      // เน็ตสะดุด/สลับ Wi-Fi: ลองหาเส้นทางใหม่ (ICE restart) 1 ครั้งก่อนยอมแพ้
+      pc.onconnectionstatechange = () => {
+        const st = pc.connectionState;
+        if (st === "connected") { clearTimeout(this.failTimer); this.detectRoute(); }
+        if (st === "failed") {
+          if (this.restarted || !pc.restartIce) return this.kill("failed");
+          this.restarted = true;
+          pc.restartIce();
+          this.failTimer = setTimeout(() => { if (pc.connectionState !== "connected") this.kill("failed"); }, 12000);
+        }
+      };
       // จัดคิวให้ประมวลผลสัญญาณตามลำดับ (กัน ICE candidate มาก่อน remote description)
       this.sigQ = Promise.resolve();
       this.onSignal = (data) => { this.sigQ = this.sigQ.then(() => handle(data)); };
@@ -446,11 +471,29 @@
       await Promise.race([this.opened, new Promise((_, rej) => { t = setTimeout(() => rej(new Error("timeout")), ms); })]).finally(() => clearTimeout(t));
     }
     json(o) { this.dc.send(JSON.stringify(o)); }
+    // รอจนคิวลดลงต่ำกว่า LOW_WATER — ใช้ event เป็นหลัก + poll สั้นๆ เผื่อเบราว์เซอร์ที่ event ไม่ยิง
     async drain() {
-      while (this.dc.bufferedAmount > HIGH_WATER) {
-        if (this.dead) throw new Error("closed");
-        await new Promise((r) => { const f = () => r(); this.dc.addEventListener("bufferedamountlow", f, { once: true }); setTimeout(f, 1000); });
+      if (this.dc.bufferedAmount <= HIGH_WATER) return;
+      while (this.dc.bufferedAmount > LOW_WATER) {
+        if (this.dead || this.dc.readyState !== "open") throw new Error("closed");
+        await new Promise((r) => {
+          const done = () => { clearInterval(iv); this.dc.removeEventListener("bufferedamountlow", done); r(); };
+          const iv = setInterval(() => { if (this.dc.bufferedAmount <= LOW_WATER || this.dead) done(); }, 50);
+          this.dc.addEventListener("bufferedamountlow", done);
+        });
       }
+    }
+    // ดูว่าต่อตรง (host/srflx) หรือผ่าน TURN (relay)
+    async detectRoute() {
+      try {
+        const stats = await this.pc.getStats();
+        let pair = null;
+        stats.forEach((s) => { if (s.type === "transport" && s.selectedCandidatePairId) pair = stats.get(s.selectedCandidatePairId); });
+        if (!pair) stats.forEach((s) => { if (s.type === "candidate-pair" && s.nominated && s.state === "succeeded") pair = s; });
+        const local = pair && stats.get(pair.localCandidateId);
+        const remote = pair && stats.get(pair.remoteCandidateId);
+        if (local) this.route = local.candidateType === "relay" || remote?.candidateType === "relay" ? "relay" : "direct";
+      } catch {}
     }
     waitFor(pred, ms = 0) {
       return new Promise((resolve, reject) => {
@@ -462,6 +505,7 @@
     kill(reason) {
       if (this.dead) return;
       this.dead = true;
+      clearTimeout(this.failTimer);
       this.rejectOpen?.(new Error(reason));
       this.waiters.forEach((w) => { clearTimeout(w.timer); w.reject(new Error(reason)); });
       this.waiters = [];
@@ -510,9 +554,22 @@
     try { await conn.ready(); return conn; }
     catch {
       setPeerProgress(id, 0, "", "idle");
-      toast("เชื่อมต่อแบบ P2P ไม่สำเร็จ — เครือข่ายอาจบล็อก (ต้องตั้ง TURN server)", true, 5000);
+      toast(CFG.turn
+        ? "เชื่อมต่อไม่สำเร็จ แม้ผ่าน TURN — ลองใหม่อีกครั้ง หรือสลับเครือข่าย"
+        : "เชื่อมต่อแบบ P2P ไม่สำเร็จ — เครือข่ายนี้บล็อกการต่อตรง (ผู้ดูแลต้องตั้ง TURN server)", true, 5000);
       conn.kill("timeout");
       return null;
+    }
+  }
+  const routeLabel = (conn) => (conn?.route === "relay" ? " · 🔁 TURN" : conn?.route === "direct" ? " · ⚡ ตรง" : "");
+  const fmtEta = (s) => (!isFinite(s) || s <= 0 ? "" : s < 60 ? ` · เหลือ ${Math.ceil(s)} วิ` : ` · เหลือ ${Math.ceil(s / 60)} นาที`);
+  // อ่านไฟล์ล่วงหน้า 1 ช่วง: ระหว่างส่งช่วงนี้ ดิสก์ก็อ่านช่วงถัดไปไปพร้อมกัน
+  async function* readBlocks(file) {
+    let next = file.size ? file.slice(0, READ).arrayBuffer() : null;
+    for (let off = 0; off < file.size; off += READ) {
+      const buf = await next;
+      next = off + READ < file.size ? file.slice(off + READ, off + 2 * READ).arrayBuffer() : null;
+      yield buf;
     }
   }
 
@@ -531,33 +588,43 @@
       setPeerProgress(id, 0, "รออีกฝ่ายตอบรับ…", "waiting");
       const ans = await conn.waitFor((m) => m.tid === tid && ["acc", "dec", "x"].includes(m.t), 120000);
       if (ans.t !== "acc") { toast(`${p.info.name} ปฏิเสธการรับไฟล์`, true); return; }
-      let sent = 0, last = 0;
+      // ลงทะเบียนรอ "ได้รับครบ" ตั้งแต่ก่อนเริ่มส่ง — กันข้อความยืนยันมาถึงก่อนที่เราจะเริ่มรอ
+      const finished = conn.waitFor((m) => m.tid === tid && (m.t === "ok" || m.t === "x"));
+      finished.then((m) => { if (m.t === "x") job.remoteCancel = true; }, () => {});
+      let queued = 0, last = 0;
       const t0 = performance.now();
+      const chunk = conn.chunk;
+      // ความเร็ว/เปอร์เซ็นต์คิดจาก "ส่งถึงจริง" = ใส่คิวแล้ว - ที่ยังค้างในคิว (ไม่หลอกตาช่วงแรก)
       const report = (force) => {
         const now = performance.now();
-        if (!force && now - last < 120) return;
+        if (!force && now - last < 150) return;
         last = now;
-        const speed = sent / Math.max((now - t0) / 1000, .001);
-        setPeerProgress(id, total ? sent / total : 1, `${Math.floor((total ? sent / total : 1) * 100)}% · ${fmtSize(speed)}/s`);
+        const done = Math.max(0, queued - conn.dc.bufferedAmount);
+        const speed = done / Math.max((now - t0) / 1000, .001);
+        const frac = total ? done / total : 1;
+        setPeerProgress(id, frac, `${Math.floor(frac * 100)}% · ${fmtSize(speed)}/s${fmtEta((total - done) / speed)}${routeLabel(conn)}`);
       };
       for (let i = 0; i < files.length; i++) {
         const f = files[i].file;
         conn.json({ t: "fs", tid, i });
-        for (let off = 0; off < f.size; off += READ) {
-          const buf = await f.slice(off, off + READ).arrayBuffer();
-          for (let o = 0; o < buf.byteLength; o += CHUNK) {
+        for await (const buf of readBlocks(f)) {
+          for (let o = 0; o < buf.byteLength; o += chunk) {
             if (job.cancelled) throw new Error("cancelled");
+            if (job.remoteCancel) throw new Error("cancelled-remote");
             await conn.drain();
-            conn.dc.send(buf.slice(o, o + CHUNK));
-            sent += Math.min(CHUNK, buf.byteLength - o);
+            const len = Math.min(chunk, buf.byteLength - o);
+            conn.dc.send(new Uint8Array(buf, o, len)); // view แทน slice = ไม่ต้องคัดลอกหน่วยความจำ
+            queued += len;
             report();
           }
         }
         conn.json({ t: "fe", tid, i });
       }
+      while (conn.dc.bufferedAmount > 0 && !conn.dead && !job.cancelled) { report(); await sleep(100); }
+      if (job.cancelled) throw new Error("cancelled");
       report(true);
       setPeerProgress(id, 1, "รอยืนยันจากผู้รับ…");
-      const fin = await conn.waitFor((m) => m.tid === tid && (m.t === "ok" || m.t === "x"));
+      const fin = await finished;
       if (fin.t === "x") throw new Error("cancelled-remote");
       flashDone(id);
       toast(`ส่ง ${files.length} รายการ (${fmtSize(total)}) ให้ ${p.info.name} สำเร็จ`);
@@ -648,7 +715,8 @@
     if (now - inc.lastUi > 120) {
       inc.lastUi = now;
       const speed = inc.got / Math.max((now - inc.t0) / 1000, .001);
-      setPeerProgress(conn.peerId, inc.total ? inc.got / inc.total : 1, `รับ ${Math.floor((inc.total ? inc.got / inc.total : 1) * 100)}% · ${fmtSize(speed)}/s`);
+      const frac = inc.total ? inc.got / inc.total : 1;
+      setPeerProgress(conn.peerId, frac, `รับ ${Math.floor(frac * 100)}% · ${fmtSize(speed)}/s${fmtEta((inc.total - inc.got) / speed)}${routeLabel(conn)}`);
     }
   }
 
@@ -876,6 +944,24 @@
     };
   });
 
+  /* ================= ICE (STUN/TURN) refresh ================= */
+  // credential TURN มีอายุ — ดึงใหม่ก่อนหมด (การเชื่อมต่อที่เปิดอยู่แล้วไม่กระทบ)
+  let iceTimer = 0;
+  function scheduleIceRefresh(ttlSec) {
+    clearTimeout(iceTimer);
+    iceTimer = setTimeout(refreshIce, Math.max(60, ttlSec * 0.8) * 1000);
+  }
+  async function refreshIce() {
+    try {
+      const r = await fetch("/api/ice", { cache: "no-store" });
+      if (!r.ok) throw 0;
+      const d = await r.json();
+      if (d.ice_servers?.length) CFG.ice_servers = d.ice_servers;
+      CFG.turn = !!d.turn;
+      scheduleIceRefresh(d.ttl || 600);
+    } catch { scheduleIceRefresh(120); }
+  }
+
   /* ================= boot ================= */
   async function boot() {
     document.body.insertAdjacentHTML("beforeend", '<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c8cff"/><stop offset="1" stop-color="#4fd1c5"/></linearGradient></defs></svg>');
@@ -892,6 +978,8 @@
         fetch("/api/room").then((r) => (r.ok ? r.json() : {})),
       ]);
       if (cfg.ice_servers?.length) CFG.ice_servers = cfg.ice_servers;
+      CFG.turn = !!cfg.turn;
+      scheduleIceRefresh(600);
       if (cfg.supabase_url && cfg.supabase_anon_key && window.supabase) {
         supa = window.supabase.createClient(cfg.supabase_url, cfg.supabase_anon_key, { realtime: { params: { eventsPerSecond: 40 } } });
       }
@@ -900,6 +988,11 @@
     if (!supa) {
       $("banner").hidden = false;
       $("banner").textContent = "โหมดทดสอบ: ยังไม่ได้ตั้งค่า Supabase จึงเห็นเฉพาะแท็บอื่นในเบราว์เซอร์นี้";
+    } else if (FORCE_RELAY) {
+      $("banner").hidden = false;
+      $("banner").textContent = CFG.turn
+        ? "โหมดทดสอบ TURN: บังคับส่งผ่าน TURN server (ให้อีกเครื่องเปิดลิงก์ที่มี ?relay=1 ด้วย)"
+        : "โหมดทดสอบ TURN: เซิร์ฟเวอร์ยังไม่ได้ตั้ง TURN — จะเชื่อมต่อไม่ได้";
     }
     joinRoom(netRoom || "local", "net", "เครือข่ายเดียวกัน");
     const params = new URLSearchParams(location.search);
