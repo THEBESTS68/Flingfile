@@ -1,22 +1,11 @@
 {
-  "builds": [
-    {
-      "src": "main.py",
-      "use": "@vercel/python"
-    },
-    {
-      "src": "index.html",
-      "use": "@vercel/static"
-    }
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index" }
   ],
-  "routes": [
+  "headers": [
     {
-      "src": "/api/(.*)",
-      "dest": "main.py"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "index.html"
+      "source": "/assets/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=3600" }]
     }
   ]
 }
