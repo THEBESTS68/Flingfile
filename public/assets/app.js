@@ -81,7 +81,8 @@
   }
   function nextModal() {
     const item = modalQueue.shift();
-    if (!item) { modalOpen = null; return; }
+    if (!item) { modalOpen = null; document.body.classList.remove("modal-open"); return; }
+    document.body.classList.add("modal-open"); // หยุดแอนิเมชันพื้นหลังระหว่างเปิดหน้าต่าง (ลดงาน GPU)
     const wrap = $("modalWrap"), box = $("modal");
     wrap.classList.remove("out");
     box.innerHTML = "";
