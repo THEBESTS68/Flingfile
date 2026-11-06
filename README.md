@@ -6,6 +6,7 @@
 ```
  เครื่อง A ──presence / SDP / ICE──▶ Supabase Realtime ◀──── เครื่อง B     (ข้อความเล็กๆ ใช้หาและจับมือกัน)
  เครื่อง A ════════════ ไฟล์ (WebRTC DataChannel, เข้ารหัส DTLS) ═══════════ เครื่อง B
+                    └── ถ้าต่อตรงไม่ได้ ── TURN server (ส่งต่อให้ เข้ารหัสอยู่ ไม่เห็นเนื้อไฟล์) ──┘
 ```
 
 ## โครงสร้าง
@@ -15,38 +16,68 @@
 | `public/index.html` | โครงหน้าเว็บ |
 | `public/assets/style.css` | ธีม Glassmorphism + แอนิเมชัน |
 | `public/assets/app.js` | ค้นหาอุปกรณ์, WebRTC, โปรโตคอลส่งไฟล์, ถาดไฟล์ที่ได้รับ |
-| `api/index.py` | FastAPI: `/api/config` (ค่า Supabase + ICE servers), `/api/room` (ห้องของเครือข่ายเดียวกันจาก hash ของ Public IP) |
+| `api/index.py` | FastAPI: `/api/config` (Supabase + ICE), `/api/ice` (STUN/TURN + credential ชั่วคราว), `/api/room` (ห้องเครือข่ายเดียวกันจาก hash ของ Public IP) |
 
 ## ตั้งค่า
 
-### 1. Supabase (ใช้แค่ Realtime ไม่ต้องสร้างตารางหรือ bucket)
-- Project Settings → API → คัดลอก **Project URL** และ **anon / publishable key**
-- Realtime → Settings → ต้อง **ไม่** เปิด "Private channels only" (แอปใช้ public channel)
+### 1. Supabase (ใช้แค่ Realtime)
+ค่าเริ่มต้นของโปรเจกต์ `flingfile` อยู่ใน `api/index.py` แล้ว (publishable key เปิดเผยได้) จะใช้โปรเจกต์อื่นให้ตั้ง `SUPABASE_URL` + `SUPABASE_ANON_KEY` คู่กัน
+- Realtime → Settings → เปิด "Allow public access to channels" ไว้ (แอปใช้ public channel)
 
-### 2. Environment Variables บน Vercel
+### 2. TURN server (ไม่บังคับ แต่แนะนำ)
+**TURN คืออะไร:** ปกติไฟล์วิ่งตรงระหว่างเครื่อง แต่บางเครือข่าย (4G บางเจ้า, Wi-Fi บริษัท/มหาวิทยาลัย, NAT แบบเข้มงวด) ไม่ยอมให้ต่อตรง
+TURN เป็น "คนกลางส่งต่อ" ให้ในกรณีนั้น ข้อมูลยังเข้ารหัสแบบ end-to-end (DTLS) TURN อ่านไฟล์ไม่ได้
+แอปจะ **ลองต่อตรงก่อนเสมอ** ใช้ TURN เฉพาะเมื่อจำเป็น — บนจอจะเห็น `⚡ ตรง` หรือ `🔁 TURN`
+
+**แนะนำ: Cloudflare Realtime TURN (ฟรี 1,000 GB/เดือน)**
+1. เข้า Cloudflare Dashboard → **Realtime** → **TURN Server** → Create
+2. คัดลอก **Turn Token ID** และ **API Token**
+3. ใส่ใน Vercel → Settings → Environment Variables (Production + Preview) แล้ว Redeploy:
+   - `CLOUDFLARE_TURN_KEY_ID` = Turn Token ID
+   - `CLOUDFLARE_TURN_API_TOKEN` = API Token
+4. ทดสอบ: เปิด `https://<โดเมน>/?relay=1` บน 2 เครื่อง (บังคับใช้ TURN) แล้วส่งไฟล์ — ต้องเห็น `🔁 TURN`
+
+API Token อยู่ฝั่งเซิร์ฟเวอร์เท่านั้น เบราว์เซอร์ได้แค่ credential ชั่วคราว (อายุตาม `TURN_TTL` ค่าเริ่มต้น 6 ชม.) และแอปขอใหม่อัตโนมัติก่อนหมดอายุ
+
+### 3. Environment Variables ทั้งหมด
 
 | ตัวแปร | จำเป็น | ความหมาย |
 |---|---|---|
-| `SUPABASE_URL` | ✅ | `https://xxxx.supabase.co` |
-| `SUPABASE_ANON_KEY` | ✅ | anon/publishable key (เปิดเผยได้ ไม่ใช่ service key) |
+| `SUPABASE_URL`, `SUPABASE_ANON_KEY` | ไม่ (มีค่าเริ่มต้น) | ใช้โปรเจกต์ Supabase อื่น — ต้องตั้งคู่กัน |
 | `ROOM_SALT` | แนะนำ | ข้อความสุ่มยาวๆ ใช้ผสมตอน hash IP |
-| `TURN_URL` | ไม่บังคับ | เช่น `turn:global.relay.metered.ca:443?transport=tcp` (คั่นหลายตัวด้วย `,`) |
-| `TURN_USERNAME`, `TURN_CREDENTIAL` | ไม่บังคับ | บัญชี TURN |
-| `ICE_SERVERS_JSON` | ไม่บังคับ | JSON array ของ ICE server เพิ่มเติม |
+| `CLOUDFLARE_TURN_KEY_ID`, `CLOUDFLARE_TURN_API_TOKEN` | ไม่ | TURN ของ Cloudflare (แนะนำ) |
+| `METERED_DOMAIN`, `METERED_API_KEY` | ไม่ | TURN ของ Metered.ca (เช่น `yourapp.metered.live`) |
+| `TURN_URL`, `TURN_USERNAME`, `TURN_CREDENTIAL` | ไม่ | TURN ของตัวเอง เช่น coturn (หลาย url คั่นด้วย `,`) |
+| `ICE_SERVERS_JSON` | ไม่ | JSON array ของ ICE server เพิ่มเติม |
+| `TURN_TTL` | ไม่ | อายุ credential ชั่วคราว (วินาที, ค่าเริ่มต้น 21600) |
 
-> ⚠️ `SUPABASE_SERVICE_KEY` ตัวเดิมไม่ได้ใช้แล้ว ให้ลบออกจาก Vercel
+ถ้าตั้งหลายเจ้า จะใช้ Cloudflare ก่อน → Metered → แบบ static; ถ้าเจ้าไหนล่มจะข้ามไปเจ้าถัดไป และถ้าล่มทั้งหมดก็ยังใช้ STUN (ต่อตรง) ได้ตามปกติ
 
-### 3. Deploy
-```bash
-vercel --prod
-```
+## ความเร็ว
+
+ผลวัดจริง (200 MB ระหว่าง 2 แท็บในเครื่องเดียว, 3 รอบต่อแบบ, หน่วย MB/s):
+
+| ค่าที่ลอง | รอบ 1 | รอบ 2 | รอบ 3 |
+|---|---|---|---|
+| ชิ้น 64 KB, คิว 8/1 MB (ค่าที่ใช้) | 16.7 | 20.0 | 20.7 |
+| ชิ้น 256 KB, คิว 8/1 MB | 16.4 | 19.9 | 20.6 |
+| ชิ้น 64 KB, คิว 12/4 MB | 17.0 | 15.7 | 11.1 |
+
+สรุป: ชิ้นใหญ่ไม่ช่วย, คิวใหญ่ทำให้ช้าลงและไม่นิ่ง → คงค่า 64 KB / 8–1 MB ไว้ ความเร็วจริงจึงขึ้นกับเครือข่ายเป็นหลัก (Wi-Fi เดียวกันเร็วสุด, ผ่าน TURN ช้ากว่า)
+
+สิ่งที่ปรับให้ "รู้สึกเร็วขึ้น" และเสถียรขึ้น:
+- **อุ่นการเชื่อมต่อล่วงหน้า:** แตะอุปกรณ์ปุ๊บเริ่มต่อ P2P ทันทีระหว่างเลือกไฟล์ — วัดได้ 252 ms → 1 ms (บนอินเทอร์เน็ตจริงปกติ 0.5–3 วิ)
+- **อ่านไฟล์ล่วงหน้า:** ระหว่างส่งช่วงนี้ ดิสก์อ่านช่วงถัดไปพร้อมกัน (ช่วยเมื่อดิสก์/มือถือช้า)
+- **เปอร์เซ็นต์และความเร็วคิดจากที่ส่งถึงจริง** + แสดงเวลาที่เหลือและเส้นทาง (`⚡ ตรง` / `🔁 TURN`)
+- **เน็ตสะดุด:** ลองหาเส้นทางใหม่ (ICE restart) 1 ครั้งก่อนตัดการเชื่อมต่อ
+- **ผู้รับกดยกเลิก:** ผู้ส่งหยุดส่งทันที ไม่เปลืองเน็ตส่งต่อจนจบ
 
 ## รันในเครื่อง
 ```bash
 pip install fastapi uvicorn
 uvicorn api.index:app --reload --port 8000
 ```
-เปิด http://localhost:8000 ใน 2 แท็บ ถ้าไม่ได้ตั้ง `SUPABASE_*` จะเข้า **โหมดทดสอบ** ที่เห็นกันเฉพาะแท็บในเบราว์เซอร์เดียวกัน (ใช้ BroadcastChannel)
+เปิด http://localhost:8000 ใน 2 แท็บ
 
 ## วิธีใช้
 - **ส่งไฟล์:** แตะอุปกรณ์ → เลือก ไฟล์ / โฟลเดอร์ / ข้อความ หรือลากไฟล์ไปวางบนอุปกรณ์นั้น
@@ -59,6 +90,6 @@ uvicorn api.index:app --reload --port 8000
 ## ข้อจำกัด
 - ทั้งสองเครื่องต้องเปิดหน้าเว็บค้างไว้ระหว่างส่ง (ล็อกจอหรือสลับแอปบนมือถืออาจทำให้หลุด)
 - ไฟล์ที่รับจะพักในหน่วยความจำ/ดิสก์ชั่วคราวของเบราว์เซอร์ก่อนบันทึก ไฟล์หลาย GB บนมือถืออาจไม่พอ
-- ถ้าไม่มี TURN server เครือข่ายบางแบบ (4G บางเจ้า, Wi-Fi องค์กร) จะต่อ P2P ไม่ติด
+- ถ้าไม่ได้ตั้ง TURN เครือข่ายบางแบบจะต่อไม่ติด; ถ้าตั้งแล้ว การส่งผ่าน TURN ใช้โควตาของผู้ให้บริการ TURN
 - "เครือข่ายเดียวกัน" คือ Public IP เดียวกัน ถ้าเครื่องหนึ่งใช้ IPv4 อีกเครื่องใช้ IPv6 อาจไม่เห็นกัน → ใช้ "จับคู่ข้ามเครือข่าย"
 - รวม .zip ในเบราว์เซอร์ได้ไม่เกิน 1 GB
