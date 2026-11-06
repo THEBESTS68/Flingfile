@@ -1,70 +1,83 @@
 <!DOCTYPE html>
 <html lang="th">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ฝากไฟล์ชั่วคราว</title>
-    <!-- หากต้องการตกแต่งให้สวยขึ้น สามารถนำ Tailwind CSS มาใช้ตรงนี้ได้ -->
-    <style>
-        body { font-family: sans-serif; text-align: center; padding: 50px; background-color: #f3f4f6; }
-        .box { background: white; border-radius: 10px; padding: 30px; margin: 20px auto; max-width: 400px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        button { background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-top: 10px;}
-        button:hover { background: #2563eb; }
-        input { padding: 8px; width: 80%; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px;}
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Flingfile — โยนไฟล์ข้ามอุปกรณ์</title>
+<meta name="description" content="โยนไฟล์ข้ามอุปกรณ์แบบ P2P ไม่ผ่านเซิร์ฟเวอร์ ไม่จำกัดจำนวนไฟล์ ไม่ต้องติดตั้งแอป">
+<meta name="theme-color" content="#0b1020">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237c8cff'/%3E%3Cstop offset='1' stop-color='%234fd1c5'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='url(%23g)'/%3E%3Cpath d='M8 16h12M15 10l6 6-6 6M24 9v14' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
+  <div class="aurora" aria-hidden="true"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div><div class="grain"></div></div>
 
-    <h1>ส่งไฟล์ด่วน 🚀</h1>
-
-    <div class="box">
-        <h3>อัปโหลดไฟล์</h3>
-        <input type="file" id="fileInput">
-        <button onclick="uploadFile()" id="uploadBtn">อัปโหลดเลย</button>
-        <p id="uploadResult" style="color: #16a34a; font-weight: bold; font-size: 1.2rem; margin-top: 15px;"></p>
+  <header class="topbar">
+    <div class="logo">
+      <span class="logo-mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h10"/><path d="M11 6l6 6-6 6"/><path d="M19 5v14"/></svg></span>
+      <span class="grad-text">Flingfile</span>
     </div>
+    <div class="chips" id="chips" aria-live="polite"></div>
+    <button class="glass-btn" id="pairBtn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.07 0l3-3a5 5 0 00-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 00-7.07 0l-3 3a5 5 0 007.07 7.07l1.5-1.5"/></svg>
+      <span>จับคู่ข้ามเครือข่าย</span>
+    </button>
+  </header>
 
-    <div class="box">
-        <h3>รับไฟล์</h3>
-        <input type="text" id="codeInput" placeholder="กรอกรหัส 6 หลัก" maxlength="6">
-        <button onclick="downloadFile()">ดาวน์โหลด</button>
+  <div class="banner" id="banner" hidden></div>
+
+  <main class="stage" id="stage">
+    <div class="orbit o1" aria-hidden="true"></div>
+    <div class="orbit o2" aria-hidden="true"></div>
+    <div class="me" id="me">
+      <span class="pulse"></span><span class="pulse"></span><span class="pulse"></span>
+      <button class="me-orb" id="meOrb" aria-label="เปลี่ยนชื่อและไอคอนของฉัน"><span id="meEmoji">🦊</span></button>
+      <div class="me-label">คุณคือ <b id="meName">…</b></div>
+      <div class="me-sub" id="meSub"></div>
     </div>
+    <div class="peers" id="peers"></div>
+    <div class="empty" id="empty">
+      <div class="empty-title">กำลังมองหาอุปกรณ์รอบตัว<span class="dots"><i>.</i><i>.</i><i>.</i></span></div>
+      <div class="empty-sub">เปิดหน้านี้บนอุปกรณ์อื่นที่ต่อ <b>Wi-Fi เดียวกัน</b><br>หรือกด <b>จับคู่ข้ามเครือข่าย</b> เพื่อเชื่อมด้วยรหัส</div>
+    </div>
+  </main>
 
-    <script>
-        // ชี้ไปที่ API ในโปรเจคเดียวกัน (ผ่าน vercel.json)
-        const backendUrl = "/api";
+  <p class="hint" id="hint">แตะอุปกรณ์เพื่อส่งไฟล์ โฟลเดอร์ หรือข้อความ · ลากไฟล์ไปวางบนอุปกรณ์ได้เลย</p>
 
-        async function uploadFile() {
-            const file = document.getElementById('fileInput').files[0];
-            const btn = document.getElementById('uploadBtn');
-            if (!file) return alert("กรุณาเลือกไฟล์ก่อน!");
+  <button class="tray-toggle" id="trayToggle" hidden aria-controls="tray">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z"/></svg>
+    <span>ได้รับแล้ว</span><b id="trayCount">0</b>
+  </button>
+  <aside class="tray glass" id="tray" aria-label="ไฟล์ที่ได้รับ">
+    <div class="tray-head">
+      <strong>ไฟล์ที่ได้รับ</strong>
+      <div class="tray-actions">
+        <button class="mini-btn" id="zipAll">บันทึกเป็น .zip</button>
+        <button class="mini-btn" id="clearTray">ล้าง</button>
+        <button class="icon-btn" id="closeTray" aria-label="ปิด"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+    </div>
+    <ul class="tray-list" id="trayList"></ul>
+  </aside>
 
-            btn.innerText = "กำลังอัปโหลด...";
-            btn.disabled = true;
+  <div class="popover glass" id="popover" role="menu" hidden>
+    <button role="menuitem" data-act="files"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>ไฟล์</button>
+    <button role="menuitem" data-act="folder" id="folderAct"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>โฟลเดอร์</button>
+    <button role="menuitem" data-act="text"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>ข้อความ / ลิงก์</button>
+  </div>
 
-            const formData = new FormData();
-            formData.append("file", file);
+  <div class="modal-wrap" id="modalWrap" hidden><div class="modal glass" id="modal" role="dialog" aria-modal="true"></div></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
 
-            try {
-                const response = await fetch(`${backendUrl}/upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await response.json();
-                document.getElementById('uploadResult').innerText = `รหัสของคุณคือ: ${data.code}`;
-            } catch (error) {
-                alert("เกิดข้อผิดพลาดในการอัปโหลด");
-            } finally {
-                btn.innerText = "อัปโหลดเลย";
-                btn.disabled = false;
-            }
-        }
+  <input type="file" id="pickFiles" multiple hidden>
+  <input type="file" id="pickFolder" webkitdirectory multiple hidden>
 
-        function downloadFile() {
-            const code = document.getElementById('codeInput').value.toUpperCase();
-            if (!code) return alert("กรุณากรอกรหัส!");
-            window.location.href = `${backendUrl}/download/${code}`;
-        }
-    </script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.100.0/dist/umd/supabase.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js" defer></script>
+  <script src="assets/app.js" defer></script>
 </body>
 </html>
