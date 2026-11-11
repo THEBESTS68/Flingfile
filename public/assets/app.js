@@ -906,14 +906,14 @@
     const code = existing?.label || Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => PAIR_ALPHABET[b % PAIR_ALPHABET.length]).join("");
     box.innerHTML = `
       <div class="m-section">
-        <div class="m-title">ให้อีกเครื่องเข้าห้องนี้</div>
-        <div class="m-sub" style="margin-bottom:14px">ใช้ได้แม้อยู่คนละเครือข่าย (เช่น Wi-Fi บ้าน ↔ 4G)</div>
+        <div class="m-title">รหัสจับคู่อุปกรณ์</div>
+        <div class="m-sub" style="margin-bottom:14px">ใช้สำหรับเครือข่ายที่ต่างกัน (เช่น Wi-Fi ↔ 4G-5G)</div>
         <div class="tiles">${[...code].map((c, i) => `<span style="--i:${i}">${c}</span>`).join("")}</div>
         <div class="qr-row"><div class="qr-box" id="qr"></div><div class="m-sub">สแกนด้วยมือถือ หรือเปิดลิงก์นี้บนอีกเครื่อง<a href="${pairLink(code)}" target="_blank" rel="noopener">${pairLink(code)}</a></div></div>
-        <div class="m-actions"><button class="btn ghost" data-a="copy">คัดลอกลิงก์</button><button class="btn" data-a="join">${existing ? "อยู่ในห้องแล้ว" : "เปิดห้องนี้"}</button></div>
+        <div class="m-actions"><button class="btn ghost" data-a="copy">คัดลอกลิงก์</button><button class="btn" data-a="join">${existing ? "อยู่ในห้องแล้ว" : "สร้างห้อง"}</button></div>
       </div>
       <div class="m-section">
-        <div class="m-title" style="font-size:15px">หรือ เข้าห้องด้วยรหัสจากอีกเครื่อง</div>
+        <div class="m-title" style="font-size:15px">กรอกรหัสเพื่อเชื่อมต่อ</div>
         <div class="otp" id="otp" style="margin-top:12px"></div>
       </div>`;
     if (existing) box.querySelector('[data-a="join"]').disabled = true;
