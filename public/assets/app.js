@@ -31,6 +31,8 @@
   const store = {
     get(k, d) { try { return JSON.parse(localStorage.getItem("ff:" + k)) ?? d; } catch { return d; } },
     set(k, v) { try { localStorage.setItem("ff:" + k, JSON.stringify(v)); } catch {} },
+    getRaw(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    setRaw(k, v) { try { localStorage.setItem(k, v); } catch {} },
   };
   const ICON = {
     x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
@@ -963,9 +965,35 @@
     } catch { scheduleIceRefresh(120); }
   }
 
+  /* ================= ธีมสว่าง/มืด (แบบเดียวกับ QR-Code-Gen) ================= */
+  const themeToggle = $("themeToggle");
+  const metaTheme = document.querySelector('meta[name="theme-color"]');
+  function applyTheme(theme) {
+    document.body.classList.toggle("light", theme === "light");
+    themeToggle.title = theme === "light" ? "เปลี่ยนเป็นโหมดมืด" : "เปลี่ยนเป็นโหมดสว่าง";
+    themeToggle.setAttribute("aria-label", themeToggle.title);
+    if (metaTheme) metaTheme.content = theme === "light" ? "#f1f3f9" : "#0a0d16";
+  }
+  applyTheme(document.body.classList.contains("light") ? "light" : "dark"); // สคริปต์ใน <body> ตั้งไว้แล้ว
+  themeToggle.addEventListener("click", () => {
+    // เล่นแอนิเมชันกดยุบ-เด้ง (ดู .theme-switch.switching ใน style.css)
+    themeToggle.classList.remove("switching"); void themeToggle.offsetWidth; themeToggle.classList.add("switching");
+    const next = document.body.classList.contains("light") ? "dark" : "light";
+    applyTheme(next);
+    store.setRaw("flingfileTheme", next);
+  });
+  themeToggle.addEventListener("animationend", (e) => { if (e.animationName === "ts-press") themeToggle.classList.remove("switching"); });
+  // ผู้ใช้ยังไม่เคยเลือกเอง: ตามธีมของระบบ
+  matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", (e) => { if (!store.getRaw("flingfileTheme")) applyTheme(e.matches ? "light" : "dark"); });
+
+  // แท็บถูกซ่อน: หยุดแอนิเมชันที่วนไม่จบ (ประหยัดแบต)
+  const syncPause = () => document.documentElement.classList.toggle("fx-paused", document.hidden);
+  document.addEventListener("visibilitychange", syncPause);
+  syncPause();
+
   /* ================= boot ================= */
   async function boot() {
-    document.body.insertAdjacentHTML("beforeend", '<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c8cff"/><stop offset="1" stop-color="#4fd1c5"/></linearGradient></defs></svg>');
+    document.body.insertAdjacentHTML("beforeend", '<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#38bdf8"/></linearGradient></defs></svg>');
     renderMe();
     if (!window.RTCPeerConnection) {
       $("banner").hidden = false;
