@@ -1,12 +1,12 @@
 /* Flingfile — โยนไฟล์ข้ามอุปกรณ์แบบ P2P (WebRTC DataChannel)
  *
- *  ┌────────┐  presence + SDP/ICE (Trystero ผ่าน Nostr relay สาธารณะ)  ┌────────┐
+ *  ┌────────┐  presence + SDP/ICE (Nostr relay สาธารณะ เข้ารหัส)       ┌────────┐
  *  │ เครื่อง A │ ◀───────────────────────────────────────────────────▶ │ เครื่อง B │
  *  └────────┘ ═════════════ ไฟล์วิ่งตรง (WebRTC, เข้ารหัส DTLS) ═══════ └────────┘
  *
  *  ตัวกลางหาเครื่อง (signaling):
- *    - Trystero/Nostr — ไม่ต้องมีบัญชี (assets/vendor/trystero.min.mjs)
- *    - BroadcastChannel — ถ้าโหลด Trystero ไม่ได้ (เห็นเฉพาะแท็บในเบราว์เซอร์เดียวกัน) + แจ้งเตือน
+ *    - Nostr relay สาธารณะ — ไม่ต้องมีบัญชี (NostrPool/NostrSignal; ลายเซ็นจาก assets/vendor/nostr-sign.min.mjs)
+ *    - BroadcastChannel — ถ้าโหลดตัวเซ็นไม่ได้ (เห็นเฉพาะแท็บในเบราว์เซอร์เดียวกัน) + แจ้งเตือน
  *  สำรองเมื่อทุกอย่างล่ม: จับคู่ด้วย QR สองรอบ แลกข้อมูลจับมือผ่านกล้อง ไม่ผ่านเซิร์ฟเวอร์ใดเลย
  */
 (() => {
@@ -171,57 +171,159 @@
     stop() { clearInterval(this.timer); try { this.bc.postMessage({ k: "bye", id: me.id }); this.bc.close(); } catch {} for (const id of this.seen.keys()) this.h.leave(id); this.seen.clear(); }
   }
 
-  // Trystero ต่อ WebRTC หากันผ่าน Nostr relay สาธารณะ (ไม่ต้องมีบัญชี/ไม่มีโปรเจกต์ให้โดนพัก)
-  // ใช้การเชื่อมต่อของ Trystero เป็นท่อส่ง presence + สัญญาณจับมือให้ Conn ของแอปอีกชั้น
-  // (ส่วนส่งไฟล์จึงเหมือนเดิมทุกอย่าง)
-  const RELAY_TIMEOUT = 10000;
-  class TrysteroSignal {
-    constructor(lib, room, h) {
-      Object.assign(this, { lib, room, h });
-      this.seen = new Map();   // peer.id -> info
-      this.byTp = new Map();   // trystero peerId -> peer.id
-      this.toTp = new Map();   // peer.id -> trystero peerId
+  // ตัวกลางหาเครื่อง: Nostr relay สาธารณะ (ไม่ต้องมีบัญชี/ไม่มีโปรเจกต์ให้โดนพัก)
+  // ประกาศตัว (hello) และส่งสัญญาณจับมือผ่าน relay โดยตรง → เห็นอีกเครื่องทันที แม้ P2P ยังต่อไม่ติด
+  // ข้อความเข้ารหัส AES-GCM ด้วยกุญแจที่ได้จากชื่อห้อง: relay อ่านไม่ได้ และคนนอกห้องถอดไม่ได้
+  const DEFAULT_RELAYS = [
+    // วัดแล้ว (พ.ย. 2026) ส่งต่อ ephemeral event ได้เร็ว — ต่อทุกตัวพร้อมกัน ล่มบางตัวก็ยังใช้ได้
+    "wss://relay.snort.social", "wss://offchain.pub", "wss://relay.nostr.net", "wss://bucket.coracle.social",
+    "wss://nostrelay.circum.space", "wss://yabu.me", "wss://relay.primal.net",
+  ];
+  const NOSTR_KIND = 25050;          // ephemeral (20000–29999): relay ส่งต่อแต่ไม่เก็บ
+  const RELAY_TIMEOUT = 10000;       // ต่อ relay ไม่ได้เลยนานเท่านี้ → แจ้งเตือน
+  const HELLO_MS = 20000, PEER_TTL = 50000;
+  const te = new TextEncoder(), td = new TextDecoder();
+  const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, "0")).join("");
+  const unhex = (s) => Uint8Array.from(s.match(/../g), (h) => parseInt(h, 16));
+  const sha256 = async (s) => new Uint8Array(await crypto.subtle.digest("SHA-256", te.encode(s)));
+  const toB64 = (u8) => { let s = ""; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); };
+  const fromB64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+  // ต่อ relay ชุดเดียว ใช้ร่วมกันทุกห้อง; หลุดแล้วต่อใหม่เอง (รอนานขึ้นทีละเท่า สูงสุด 30 วิ)
+  class NostrPool {
+    constructor(lib, urls) {
+      this.lib = lib;
+      const { secretKey, publicKey } = lib.schnorr.keygen();
+      this.sk = secretKey; this.pk = hex(publicKey);
+      this.subs = new Map(); this.seen = new Set(); this.onOpen = new Set();
+      this.socks = urls.map((url) => this.connect(url));
     }
-    start() {
-      const cfg = { appId: "flingfile.p2p", identity: "none", rtcConfig: { iceServers: CFG.ice_servers } };
-      if (CFG.nostr_relays?.length) cfg.relayConfig = { urls: CFG.nostr_relays };
-      const r = this.r = this.lib.joinRoom(cfg, this.room);
-      this.hello = r.makeAction("hello");
-      this.sig = r.makeAction("sig");
-      r.onPeerJoin(({ peerId }) => this.hello.send(me, { target: peerId }).catch(() => {}));
-      r.onPeerLeave(({ peerId }) => {
-        const id = this.byTp.get(peerId);
-        this.byTp.delete(peerId);
-        if (!id || this.toTp.get(id) !== peerId) return;
-        this.toTp.delete(id); this.seen.delete(id); this.h.leave(id);
-      });
-      this.hello.onMessage((peer, { peerId }) => {
-        if (!peer?.id || peer.id === me.id) return;
-        this.byTp.set(peerId, peer.id); this.toTp.set(peer.id, peerId);
-        const old = this.seen.get(peer.id);
-        this.seen.set(peer.id, peer);
-        if (!old) this.h.join(peer);
-        else if (old.name !== peer.name || old.emoji !== peer.emoji || old.device !== peer.device) this.h.update(peer);
-      });
-      this.sig.onMessage((data, { peerId }) => { const from = this.byTp.get(peerId); if (from) this.h.signal(from, data); });
-      // สถานะ: "live" เมื่อต่อ relay ได้อย่างน้อย 1 ตัว; ต่อไม่ได้เลยนานเกิน RELAY_TIMEOUT → "error"
+    connect(url) {
+      const s = { url, ws: null, retry: 0, timer: 0 };
+      s.open = () => {
+        clearTimeout(s.timer);
+        let ws;
+        try { ws = s.ws = new WebSocket(url); } catch { return later(); }
+        ws.onopen = () => {
+          s.retry = 0;
+          for (const [id, sub] of this.subs) ws.send(JSON.stringify(["REQ", id, sub.filter]));
+          this.onOpen.forEach((fn) => fn());
+        };
+        ws.onmessage = (e) => this.onMsg(e.data);
+        ws.onclose = () => { if (s.ws === ws) { s.ws = null; later(); } };
+      };
+      const later = () => { s.timer = setTimeout(s.open, Math.min(30000, 2000 * 2 ** s.retry++)); };
+      s.open();
+      return s;
+    }
+    openCount() { return this.socks.filter((s) => s.ws?.readyState === 1).length; }
+    // กลับมาที่แท็บ / กด "ลองใหม่": ต่อตัวที่หลุดใหม่ทันที ไม่ต้องรอรอบถัดไป
+    reconnectNow() { for (const s of this.socks) if (!s.ws || s.ws.readyState > 1) { s.retry = 0; s.open(); } }
+    onMsg(raw) {
+      let m;
+      try { m = JSON.parse(raw); } catch { return; }
+      if (m[0] !== "EVENT" || !m[2]?.id || this.seen.has(m[2].id)) return;
+      this.seen.add(m[2].id);
+      if (this.seen.size > 4000) this.seen.clear();
+      this.subs.get(m[1])?.handler(m[2]);
+    }
+    sendAll(msg) { const s = JSON.stringify(msg); for (const { ws } of this.socks) if (ws?.readyState === 1) ws.send(s); }
+    sub(filter, handler) {
+      const id = rid(12);
+      this.subs.set(id, { filter, handler });
+      this.sendAll(["REQ", id, filter]);
+      return () => { this.subs.delete(id); this.sendAll(["CLOSE", id]); };
+    }
+    async sign(tag, content) {
+      const ev = { pubkey: this.pk, created_at: Math.floor(Date.now() / 1000), kind: NOSTR_KIND, tags: [["x", tag]], content };
+      ev.id = hex(await sha256(JSON.stringify([0, ev.pubkey, ev.created_at, ev.kind, ev.tags, ev.content])));
+      ev.sig = hex(await this.lib.schnorr.signAsync(unhex(ev.id), this.sk));
+      this.seen.add(ev.id); // relay จะส่งของเราเองกลับมา — ข้าม
+      return ev;
+    }
+    async publish(tag, content) { this.sendAll(["EVENT", await this.sign(tag, content)]); }
+  }
+
+  class NostrSignal {
+    constructor(pool, room, h) {
+      Object.assign(this, { pool, room, h });
+      this.peers = new Map();  // peer.id -> { info, t }
+      this.queue = new Map();  // peer.id -> สัญญาณที่รอส่งรวบเป็นก้อนเดียว
+      this.stopped = false;
+    }
+    async start() {
+      this.tag = hex(await sha256("flingfile/topic/" + this.room));
+      this.key = await crypto.subtle.importKey("raw", await sha256("flingfile/key/" + this.room), "AES-GCM", false, ["encrypt", "decrypt"]);
+      if (this.stopped) return;
+      this.unsub = this.pool.sub({ kinds: [NOSTR_KIND], "#x": [this.tag], since: Math.floor(Date.now() / 1000) - 30 }, (ev) => this.onEvent(ev));
+      this.onOpen = () => this.hello();
+      this.pool.onOpen.add(this.onOpen);
+      this.hello();
+      this.prepBye();
+      this.helloTimer = setInterval(() => { this.hello(); this.prune(); this.prepBye(); }, HELLO_MS);
       this.okAt = Date.now();
       const check = () => {
-        let open = false;
-        try { open = Object.values(this.lib.getRelaySockets()).some((s) => s.readyState === 1); } catch {}
+        const open = this.pool.openCount() > 0;
         if (open) this.okAt = Date.now();
         this.h.status(open ? "live" : Date.now() - this.okAt > RELAY_TIMEOUT ? "error" : "connecting");
       };
-      this.timer = setInterval(check, 500);
+      this.statusTimer = setInterval(check, 500);
       check();
     }
-    send(to, data) { const tp = this.toTp.get(to); if (tp) this.sig.send(data, { target: tp }).catch(() => {}); }
-    update() { this.hello?.send(me).catch(() => {}); }
+    async seal(msg) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, this.key, te.encode(JSON.stringify(msg))));
+      return toB64(iv) + "." + toB64(ct);
+    }
+    async post(msg) { if (this.key) await this.pool.publish(this.tag, await this.seal(msg)); }
+    // ข้อความ "ออกจากห้อง" เซ็นไว้ล่วงหน้า (ต่ออายุทุกรอบ hello) — ตอนปิดแท็บส่งได้ทันที ไม่ต้องรอเข้ารหัส/เซ็น
+    async prepBye() { try { this.bye = await this.pool.sign(this.tag, await this.seal({ t: "b", id: me.id })); } catch {} }
+    // hello ทั่วห้อง (รวบหลายครั้งที่ติดกันเป็นครั้งเดียว) หรือส่งตรงถึงคนเดียว (ask = ขอให้ตอบกลับ)
+    hello(to, ask = false) {
+      if (to) return this.post({ t: "h", p: me, to, ask }).catch(() => {});
+      clearTimeout(this.helloSoon);
+      this.helloSoon = setTimeout(() => this.post({ t: "h", p: me }).catch(() => {}), 250);
+    }
+    async onEvent(ev) {
+      let m;
+      try {
+        const [iv, ct] = ev.content.split(".");
+        m = JSON.parse(td.decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64(iv) }, this.key, fromB64(ct))));
+      } catch { return; } // ไม่ใช่ของห้องนี้ / ข้อมูลเสีย
+      if (this.stopped) return;
+      if (m.t === "h" && m.p?.id && m.p.id !== me.id && (!m.to || m.to === me.id)) {
+        const old = this.peers.get(m.p.id);
+        // hello ทั่วห้องจากเครื่องที่ยังไม่รู้จัก อาจเป็นข้อความเก่าที่ relay เก็บไว้ (เครื่องนั้นปิดไปแล้ว)
+        // → ยังไม่แสดง แต่ถามตรงกลับไปก่อน; แสดงเมื่อได้ข้อความตรงถึงเรา = เครื่องนั้นยังอยู่จริง
+        if (!old && !m.to) return this.hello(m.p.id, true);
+        this.peers.set(m.p.id, { info: m.p, t: Date.now() });
+        if (m.to && m.ask) this.hello(m.p.id);
+        if (!old) this.h.join(m.p);
+        else if (old.info.name !== m.p.name || old.info.emoji !== m.p.emoji || old.info.device !== m.p.device) this.h.update(m.p);
+      } else if (m.t === "b" && this.peers.delete(m.id)) this.h.leave(m.id);
+      else if (m.t === "s" && m.to === me.id && m.from && Array.isArray(m.d)) {
+        const p = this.peers.get(m.from);
+        if (p) p.t = Date.now();
+        m.d.forEach((d) => this.h.signal(m.from, d));
+      }
+    }
+    prune() { const now = Date.now(); for (const [id, p] of this.peers) if (now - p.t > PEER_TTL) { this.peers.delete(id); this.h.leave(id); } }
+    // สัญญาณจับมือ (SDP + ICE candidate หลายชิ้น) รวบส่งเป็นก้อนเดียว ลดจำนวน event ที่ relay ต้องรับ
+    send(to, data) {
+      const q = this.queue.get(to);
+      if (q) return q.push(data);
+      this.queue.set(to, [data]);
+      setTimeout(() => { const d = this.queue.get(to); this.queue.delete(to); this.post({ t: "s", from: me.id, to, d }).catch(() => {}); }, 120);
+    }
+    update() { this.hello(); }
     stop() {
-      clearInterval(this.timer);
-      try { this.r?.leave(); } catch {}
-      for (const id of this.seen.keys()) this.h.leave(id);
-      this.seen.clear(); this.byTp.clear(); this.toTp.clear();
+      this.stopped = true;
+      clearInterval(this.helloTimer); clearInterval(this.statusTimer); clearTimeout(this.helloSoon);
+      this.pool.onOpen.delete(this.onOpen);
+      if (this.bye) this.pool.sendAll(["EVENT", this.bye]);
+      this.unsub?.();
+      for (const id of this.peers.keys()) this.h.leave(id);
+      this.peers.clear();
     }
   }
 
@@ -247,12 +349,12 @@
 
   /* ================= rooms & peers ================= */
   let CFG = { ice_servers: [{ urls: ["stun:stun.l.google.com:19302"] }] };
-  let trystero = null;   // โมดูล Trystero (null = โหลดไม่ได้ → ใช้ LocalSignal)
+  let pool = null;       // NostrPool (null = โหลดไม่ได้ → ใช้ LocalSignal)
   const rooms = new Map();   // roomId -> { signal, label, kind, status }
   const peers = new Map();   // peerId -> { info, rooms:Set, el, conn, queue }
   const via = new Map();     // peerId -> signal ที่ใช้ติดต่อล่าสุด
 
-  const makeSignal = (roomId, h) => trystero ? new TrysteroSignal(trystero, roomId, h) : new LocalSignal(roomId, h);
+  const makeSignal = (roomId, h) => pool ? new NostrSignal(pool, roomId, h) : new LocalSignal(roomId, h);
   function joinRoom(roomId, kind, label, factory = makeSignal) {
     if (rooms.has(roomId)) return;
     const room = { kind, label, status: "connecting" };
@@ -1199,7 +1301,7 @@
 
   // ใช้เฉพาะตอนระบบค้นหาอุปกรณ์ล่ม (ตอนปกติใช้รหัสห้อง 6 หลักซึ่งง่ายกว่า)
   // ขั้นตอน: เครื่องหนึ่ง "แสดง QR" อีกเครื่อง "สแกน QR" แล้วสลับกันสแกนอีกครั้ง
-  const netDown = () => !trystero || [...rooms.values()].some((r) => r.kind === "net" && r.status === "error");
+  const netDown = () => !pool || [...rooms.values()].some((r) => r.kind === "net" && r.status === "error");
   const stepSub = (n, text) => `<div class="m-sub">ขั้น ${n} จาก 2 · ${text}</div>`;
 
   // เริ่ม: ถามว่าเครื่องนี้จะแสดงหรือสแกน
@@ -1357,6 +1459,7 @@
   function retryNet(silent = false) {
     const [id, r] = [...rooms].find(([, r]) => r.kind === "net") || [];
     if (!id) return;
+    pool?.reconnectNow();
     leaveRoom(id);
     joinRoom(id, "net", r.label);
     if (!silent) toast("กำลังลองเชื่อมต่อใหม่…");
@@ -1364,7 +1467,7 @@
   const NET_RETRY_MS = 15000;
   let netRetryTimer = 0;
   function netStatus(s) {
-    if (!trystero) return; // โหมดแท็บเดียว: แถบแจ้งเตือนตอน boot ค้างไว้
+    if (!pool) return; // โหมดแท็บเดียว: แถบแจ้งเตือนตอน boot ค้างไว้
     if (s === "error") {
       showBanner("เชื่อมต่อระบบค้นหาอุปกรณ์ไม่ได้ — เครื่องอื่นจะยังไม่เห็นเครื่องนี้", [["ลองใหม่", () => retryNet()], ["จับคู่ด้วย QR", qrStart]]);
       // relay ที่เคยล่มจะถูกพักนานขึ้นเรื่อยๆ → ลองต่อใหม่เองเป็นระยะ ไม่ต้องรอผู้ใช้กด
@@ -1413,6 +1516,8 @@
 
   // แท็บถูกซ่อน: หยุดแอนิเมชันที่วนไม่จบ (ประหยัดแบต)
   const syncPause = () => document.documentElement.classList.toggle("fx-paused", document.hidden);
+  // มือถือมักตัดการเชื่อมต่อ relay ตอนสลับแอป/ล็อกจอ → กลับมาแล้วต่อใหม่และประกาศตัวทันที
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && pool) { pool.reconnectNow(); rooms.forEach((r) => r.signal.update()); } });
   document.addEventListener("visibilitychange", syncPause);
   syncPause();
 
@@ -1443,14 +1548,17 @@
       scheduleIceRefresh(600);
       netRoom = room.room || null;
     } catch {}
-    try { trystero = await import("./vendor/trystero.min.mjs"); } catch { trystero = null; }
+    try {
+      const lib = await import("./vendor/nostr-sign.min.mjs");
+      pool = new NostrPool(lib, CFG.nostr_relays?.length ? CFG.nostr_relays : DEFAULT_RELAYS);
+    } catch { pool = null; }
     if (FORCE_RELAY) {
       bannerBase = CFG.turn
         ? "โหมดทดสอบ TURN: บังคับส่งผ่าน TURN server (ให้อีกเครื่องเปิดลิงก์ที่มี ?relay=1 ด้วย)"
         : "โหมดทดสอบ TURN: เซิร์ฟเวอร์ยังไม่ได้ตั้ง TURN — จะเชื่อมต่อไม่ได้";
       showBanner(bannerBase);
     }
-    if (!trystero) {
+    if (!pool) {
       // โหลดระบบค้นหาไม่ได้ → เห็นเฉพาะแท็บในเบราว์เซอร์นี้ + ทางสำรอง QR
       bannerBase = null;
       showBanner("โหลดระบบค้นหาอุปกรณ์ไม่สำเร็จ — ตอนนี้เห็นเฉพาะแท็บอื่นในเบราว์เซอร์นี้", [["โหลดใหม่", () => location.reload()], ["จับคู่ด้วย QR", qrStart]]);

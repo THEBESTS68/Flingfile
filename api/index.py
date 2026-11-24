@@ -20,9 +20,9 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI(title="Flingfile")
 
-# Signaling (ให้เครื่องเจอกันและจับมือกัน) ค่าเริ่มต้นใช้ Trystero ผ่าน Nostr relay สาธารณะ
-# ไม่ต้องมีบัญชีหรือ key — ฝั่งเบราว์เซอร์ทำเองทั้งหมด (public/assets/vendor/trystero.min.mjs)
-# NOSTR_RELAYS: (ไม่บังคับ) รายชื่อ relay คั่นด้วย , ถ้าไม่ตั้งใช้ชุดค่าเริ่มต้นของ Trystero
+# Signaling (ให้เครื่องเจอกันและจับมือกัน) ใช้ Nostr relay สาธารณะ
+# ไม่ต้องมีบัญชีหรือ key — ฝั่งเบราว์เซอร์ทำเองทั้งหมด (NostrPool/NostrSignal ใน public/assets/app.js)
+# NOSTR_RELAYS: (ไม่บังคับ) รายชื่อ relay คั่นด้วย , ถ้าไม่ตั้งใช้ DEFAULT_RELAYS ใน app.js
 NOSTR_RELAYS = [u.strip() for u in os.environ.get("NOSTR_RELAYS", "").split(",") if u.strip()]
 ROOM_SALT = os.environ.get("ROOM_SALT") or "flingfile"
 
