@@ -1006,11 +1006,6 @@
       <div class="m-section">
         <div class="m-title" style="font-size:15px">กรอกรหัสเพื่อเชื่อมต่อ</div>
         <div class="otp" id="otp" style="margin-top:12px"></div>
-      </div>
-      <div class="m-section">
-        <div class="m-title" style="font-size:15px">จับคู่ด้วย QR ไม่ผ่านเซิร์ฟเวอร์</div>
-        <div class="m-sub">ใช้เมื่อเครื่องหากันไม่เจอ — สแกน QR กันสองรอบ</div>
-        <div class="m-actions"><button class="btn ghost" data-a="qrscan">สแกน QR</button><button class="btn" data-a="qrmake">สร้าง QR</button></div>
       </div>`;
     if (existing) box.querySelector('[data-a="join"]').disabled = true;
     if (window.qrcode) { const q = qrcode(0, "M"); q.addData(pairLink(code)); q.make(); box.querySelector("#qr").innerHTML = q.createSvgTag({ cellSize: 3, margin: 0, scalable: true }); }
@@ -1040,8 +1035,6 @@
       const a = e.target.closest("[data-a]")?.dataset.a;
       if (a === "copy") { try { await navigator.clipboard.writeText(pairLink(code)); toast("คัดลอกลิงก์แล้ว"); } catch { toast("คัดลอกไม่ได้", true); } if (!existing) joinPair(code); }
       else if (a === "join") { joinPair(code); toast("เปิดห้อง " + code + " แล้ว — รออีกเครื่องเข้ามา"); close(); }
-      else if (a === "qrmake") { close(); qrInvite(); }
-      else if (a === "qrscan") { close(); qrScanInvite(); }
     };
   });
 
