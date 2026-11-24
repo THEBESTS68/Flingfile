@@ -1,10 +1,13 @@
 /* Flingfile — โยนไฟล์ข้ามอุปกรณ์แบบ P2P (WebRTC DataChannel)
  *
- *  ┌────────┐  presence + SDP/ICE (Supabase Realtime)  ┌────────┐
- *  │ เครื่อง A │ ◀──────────────────────────────────────▶ │ เครื่อง B │
- *  └────────┘ ═════════ ไฟล์วิ่งตรง (WebRTC, เข้ารหัส DTLS) ═══ └────────┘
+ *  ┌────────┐  presence + SDP/ICE (Trystero ผ่าน Nostr relay สาธารณะ)  ┌────────┐
+ *  │ เครื่อง A │ ◀───────────────────────────────────────────────────▶ │ เครื่อง B │
+ *  └────────┘ ═════════════ ไฟล์วิ่งตรง (WebRTC, เข้ารหัส DTLS) ═══════ └────────┘
  *
- *  ไม่มี Supabase config → โหมดทดสอบ: ใช้ BroadcastChannel (เห็นเฉพาะแท็บในเบราว์เซอร์เดียวกัน)
+ *  ตัวกลางหาเครื่อง (signaling):
+ *    - Trystero/Nostr — ไม่ต้องมีบัญชี (assets/vendor/trystero.min.mjs)
+ *    - BroadcastChannel — ถ้าโหลด Trystero ไม่ได้ (เห็นเฉพาะแท็บในเบราว์เซอร์เดียวกัน) + แจ้งเตือน
+ *  สำรองเมื่อทุกอย่างล่ม: จับคู่ด้วย QR สองรอบ แลกข้อมูลจับมือผ่านกล้อง ไม่ผ่านเซิร์ฟเวอร์ใดเลย
  */
 (() => {
   "use strict";
@@ -125,7 +128,7 @@
     };
     modalOpen = { close, onDismiss: null };
     item.build(box, close, modalOpen);
-    const focusable = box.querySelector("[autofocus], input, textarea, .btn");
+    const focusable = box.querySelector("[autofocus]") || box.querySelector("input, textarea, .btn");
     focusable && setTimeout(() => focusable.focus(), 60);
   }
   $("modalWrap").addEventListener("pointerdown", (e) => { if (e.target === $("modalWrap") && modalOpen) (modalOpen.onDismiss || modalOpen.close)(); });
@@ -158,45 +161,89 @@
     stop() { clearInterval(this.timer); try { this.bc.postMessage({ k: "bye", id: me.id }); this.bc.close(); } catch {} for (const id of this.seen.keys()) this.h.leave(id); this.seen.clear(); }
   }
 
-  class SupaSignal {
-    constructor(client, room, h) { this.client = client; this.room = room; this.h = h; this.seen = new Map(); }
-    start() {
-      const ch = this.ch = this.client.channel("flingfile:" + this.room, { config: { presence: { key: me.id }, broadcast: { self: false } } });
-      ch.on("presence", { event: "sync" }, () => this.sync());
-      ch.on("broadcast", { event: "sig" }, ({ payload }) => { if (payload?.to === me.id) this.h.signal(payload.from, payload.data); });
-      ch.subscribe(async (status) => {
-        if (status === "SUBSCRIBED") { await ch.track(me); this.h.status("live"); }
-        else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") this.h.status("error");
-        else if (status === "CLOSED") this.h.status("off");
-      });
+  // Trystero ต่อ WebRTC หากันผ่าน Nostr relay สาธารณะ (ไม่ต้องมีบัญชี/ไม่มีโปรเจกต์ให้โดนพัก)
+  // ใช้การเชื่อมต่อของ Trystero เป็นท่อส่ง presence + สัญญาณจับมือให้ Conn ของแอปอีกชั้น
+  // (ส่วนส่งไฟล์จึงเหมือนเดิมทุกอย่าง)
+  const RELAY_TIMEOUT = 10000;
+  class TrysteroSignal {
+    constructor(lib, room, h) {
+      Object.assign(this, { lib, room, h });
+      this.seen = new Map();   // peer.id -> info
+      this.byTp = new Map();   // trystero peerId -> peer.id
+      this.toTp = new Map();   // peer.id -> trystero peerId
     }
-    sync() {
-      const state = this.ch.presenceState();
-      const now = new Set();
-      for (const [key, metas] of Object.entries(state)) {
-        if (key === me.id || !metas?.length) continue;
-        const peer = metas[metas.length - 1];
-        now.add(key);
-        const old = this.seen.get(key);
-        this.seen.set(key, peer);
+    start() {
+      const cfg = { appId: "flingfile.p2p", identity: "none", rtcConfig: { iceServers: CFG.ice_servers } };
+      if (CFG.nostr_relays?.length) cfg.relayConfig = { urls: CFG.nostr_relays };
+      const r = this.r = this.lib.joinRoom(cfg, this.room);
+      this.hello = r.makeAction("hello");
+      this.sig = r.makeAction("sig");
+      r.onPeerJoin(({ peerId }) => this.hello.send(me, { target: peerId }).catch(() => {}));
+      r.onPeerLeave(({ peerId }) => {
+        const id = this.byTp.get(peerId);
+        this.byTp.delete(peerId);
+        if (!id || this.toTp.get(id) !== peerId) return;
+        this.toTp.delete(id); this.seen.delete(id); this.h.leave(id);
+      });
+      this.hello.onMessage((peer, { peerId }) => {
+        if (!peer?.id || peer.id === me.id) return;
+        this.byTp.set(peerId, peer.id); this.toTp.set(peer.id, peerId);
+        const old = this.seen.get(peer.id);
+        this.seen.set(peer.id, peer);
         if (!old) this.h.join(peer);
         else if (old.name !== peer.name || old.emoji !== peer.emoji || old.device !== peer.device) this.h.update(peer);
-      }
-      for (const id of [...this.seen.keys()]) if (!now.has(id)) { this.seen.delete(id); this.h.leave(id); }
+      });
+      this.sig.onMessage((data, { peerId }) => { const from = this.byTp.get(peerId); if (from) this.h.signal(from, data); });
+      // สถานะ: "live" เมื่อต่อ relay ได้อย่างน้อย 1 ตัว; ต่อไม่ได้เลยนานเกิน RELAY_TIMEOUT → "error"
+      this.okAt = Date.now();
+      const check = () => {
+        let open = false;
+        try { open = Object.values(this.lib.getRelaySockets()).some((s) => s.readyState === 1); } catch {}
+        if (open) this.okAt = Date.now();
+        this.h.status(open ? "live" : Date.now() - this.okAt > RELAY_TIMEOUT ? "error" : "connecting");
+      };
+      this.timer = setInterval(check, 500);
+      check();
     }
-    send(to, data) { this.ch.send({ type: "broadcast", event: "sig", payload: { to, from: me.id, data } }); }
-    update() { this.ch?.track(me); }
-    stop() { try { this.client.removeChannel(this.ch); } catch {} for (const id of this.seen.keys()) this.h.leave(id); this.seen.clear(); }
+    send(to, data) { const tp = this.toTp.get(to); if (tp) this.sig.send(data, { target: tp }).catch(() => {}); }
+    update() { this.hello?.send(me).catch(() => {}); }
+    stop() {
+      clearInterval(this.timer);
+      try { this.r?.leave(); } catch {}
+      for (const id of this.seen.keys()) this.h.leave(id);
+      this.seen.clear(); this.byTp.clear(); this.toTp.clear();
+    }
+  }
+
+  // ท่อสัญญาณผ่าน DataChannel ที่จับคู่ด้วย QR แล้ว (BootLink) — ใช้แทนตัวกลางสำหรับเครื่องคู่นี้
+  class LinkSignal {
+    constructor(link, room, h) { Object.assign(this, { link, room, h }); this.peer = null; }
+    start() {
+      this.link.onmessage = (m) => {
+        if (m.k === "hello" && m.peer?.id && m.peer.id !== me.id) {
+          const first = !this.peer;
+          this.peer = m.peer;
+          first ? this.h.join(m.peer) : this.h.update(m.peer);
+        } else if (m.k === "sig" && this.peer) this.h.signal(this.peer.id, m.data);
+      };
+      this.link.onclose = () => { if (this.peer) this.h.leave(this.peer.id); this.peer = null; this.h.status("off"); };
+      this.update();
+      this.h.status("live");
+    }
+    send(to, data) { this.link.send({ k: "sig", data }); }
+    update() { this.link.send({ k: "hello", peer: me }); }
+    stop() { this.link.onclose = null; this.link.close(); if (this.peer) this.h.leave(this.peer.id); this.peer = null; }
   }
 
   /* ================= rooms & peers ================= */
   let CFG = { ice_servers: [{ urls: ["stun:stun.l.google.com:19302"] }] };
-  let supa = null;
+  let trystero = null;   // โมดูล Trystero (null = โหลดไม่ได้ → ใช้ LocalSignal)
   const rooms = new Map();   // roomId -> { signal, label, kind, status }
   const peers = new Map();   // peerId -> { info, rooms:Set, el, conn, queue }
   const via = new Map();     // peerId -> signal ที่ใช้ติดต่อล่าสุด
 
-  function joinRoom(roomId, kind, label) {
+  const makeSignal = (roomId, h) => trystero ? new TrysteroSignal(trystero, roomId, h) : new LocalSignal(roomId, h);
+  function joinRoom(roomId, kind, label, factory = makeSignal) {
     if (rooms.has(roomId)) return;
     const room = { kind, label, status: "connecting" };
     const h = {
@@ -204,9 +251,14 @@
       update: (p) => updatePeer(p),
       leave: (id) => removePeerRoom(id, roomId),
       signal: (from, data) => { via.set(from, room.signal); onSignal(from, data); },
-      status: (s) => { room.status = s; renderChips(); },
+      status: (s) => {
+        if (room.status === s || !rooms.has(roomId)) return;
+        room.status = s; renderChips();
+        if (kind === "net") netStatus(s);
+        if (kind === "qr" && s === "off") { leaveRoom(roomId); toast(`ขาดการเชื่อมต่อ QR กับ ${label}`, true); }
+      },
     };
-    room.signal = supa ? new SupaSignal(supa, roomId, h) : new LocalSignal(roomId, h);
+    room.signal = factory(roomId, h);
     rooms.set(roomId, room);
     room.signal.start();
     renderChips();
@@ -225,11 +277,12 @@
     for (const [id, r] of rooms) {
       const chip = document.createElement("span");
       chip.className = "chip " + (r.status === "live" ? "live" : r.status === "error" ? "err" : "");
-      chip.innerHTML = `<i></i>${r.kind === "pair" ? `ห้อง <b>${esc(r.label)}</b>` : esc(r.label)}`;
-      if (r.kind === "pair") {
+      chip.innerHTML = `<i></i>${r.kind === "pair" ? `ห้อง <b>${esc(r.label)}</b>` : r.kind === "qr" ? `QR · ${esc(r.label)}` : esc(r.label)}`;
+      if (r.kind === "pair" || r.kind === "qr") {
         const b = document.createElement("button");
-        b.innerHTML = ICON.x; b.title = "ออกจากห้อง"; b.setAttribute("aria-label", "ออกจากห้อง " + r.label);
-        b.onclick = () => { leaveRoom(id); toast("ออกจากห้อง " + r.label + " แล้ว"); };
+        const what = r.kind === "qr" ? "ตัดการเชื่อมต่อ" : "ออกจากห้อง";
+        b.innerHTML = ICON.x; b.title = what; b.setAttribute("aria-label", what + " " + r.label);
+        b.onclick = () => { leaveRoom(id); toast(r.kind === "qr" ? `ตัดการเชื่อมต่อ QR กับ ${r.label} แล้ว` : "ออกจากห้อง " + r.label + " แล้ว"); };
         chip.appendChild(b);
       }
       box.appendChild(chip);
@@ -942,6 +995,11 @@
       <div class="m-section">
         <div class="m-title" style="font-size:15px">กรอกรหัสเพื่อเชื่อมต่อ</div>
         <div class="otp" id="otp" style="margin-top:12px"></div>
+      </div>
+      <div class="m-section">
+        <div class="m-title" style="font-size:15px">จับคู่ด้วย QR ไม่ผ่านเซิร์ฟเวอร์</div>
+        <div class="m-sub">ใช้เมื่อเครื่องหากันไม่เจอ — สแกน QR กันสองรอบ</div>
+        <div class="m-actions"><button class="btn ghost" data-a="qrscan">สแกน QR</button><button class="btn" data-a="qrmake">สร้าง QR</button></div>
       </div>`;
     if (existing) box.querySelector('[data-a="join"]').disabled = true;
     if (window.qrcode) { const q = qrcode(0, "M"); q.addData(pairLink(code)); q.make(); box.querySelector("#qr").innerHTML = q.createSvgTag({ cellSize: 3, margin: 0, scalable: true }); }
@@ -971,8 +1029,279 @@
       const a = e.target.closest("[data-a]")?.dataset.a;
       if (a === "copy") { try { await navigator.clipboard.writeText(pairLink(code)); toast("คัดลอกลิงก์แล้ว"); } catch { toast("คัดลอกไม่ได้", true); } if (!existing) joinPair(code); }
       else if (a === "join") { joinPair(code); toast("เปิดห้อง " + code + " แล้ว — รออีกเครื่องเข้ามา"); close(); }
+      else if (a === "qrmake") { close(); qrInvite(); }
+      else if (a === "qrscan") { close(); qrScanInvite(); }
     };
   });
+
+  /* ================= จับคู่ด้วย QR (ไม่ผ่านเซิร์ฟเวอร์) ================= */
+  // เครื่อง A สร้าง "รหัสเชิญ" (SDP offer ย่อ) → B สแกน แล้วแสดง "รหัสตอบกลับ" (answer) → A สแกน
+  // ได้ DataChannel ตรงระหว่างกัน แล้วใช้เป็นท่อสัญญาณ (LinkSignal) ให้ Conn ส่งไฟล์ตามปกติ
+  const QR_TAG = "FF1.";
+  const QR_GATHER_MS = 4000;
+  const b64u = {
+    enc: (str) => btoa(String.fromCharCode(...new TextEncoder().encode(str))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+    dec: (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))),
+  };
+  const CAND_TYPES = { h: "host", s: "srflx", p: "prflx", r: "relay" };
+  // เก็บเฉพาะส่วนที่จำเป็นของ SDP (data channel อย่างเดียว) ให้ QR เล็กพอสแกนจากจอได้ง่าย
+  function packSdp(kind, sdp) {
+    const get = (re) => (re.exec(sdp) || [])[1] || "";
+    const fp = get(/a=fingerprint:sha-256 ([0-9A-F:]+)/i);
+    const u = get(/a=ice-ufrag:(\S+)/), w = get(/a=ice-pwd:(\S+)/);
+    if (!fp || !u || !w) throw new Error("sdp");
+    const cands = [...sdp.matchAll(/a=candidate:\S+ 1 udp (\d+) (\S+) (\d+) typ (host|srflx|prflx|relay)/gi)]
+      .map((m) => ({ pr: +m[1], a: m[2], p: m[3], t: m[4][0] }))
+      .sort((x, y) => y.pr - x.pr).slice(0, 6)
+      .map((c) => `${c.t} ${c.a} ${c.p} ${c.pr}`);
+    const fpb = btoa(String.fromCharCode(...fp.split(":").map((h) => parseInt(h, 16))));
+    const data = [kind, u, w, fpb, get(/a=setup:(\S+)/) || "actpass", get(/a=mid:(\S+)/) || "0", cands, [me.id, me.name, me.emoji, me.device]];
+    return QR_TAG + b64u.enc(JSON.stringify(data));
+  }
+  function unpackCode(text) {
+    const raw = String(text || "").trim();
+    const m = /#ff=([\w-]+)/.exec(raw) || new RegExp("^" + QR_TAG.replace(".", "\\.") + "([\\w-]+)$").exec(raw);
+    if (!m) throw new Error("code");
+    const [kind, u, w, fpb, setup, mid, cands, who] = JSON.parse(b64u.dec(m[1]));
+    if (!/^[oa]$/.test(kind) || !u || !w || !fpb) throw new Error("code");
+    const fp = [...atob(fpb)].map((c) => c.charCodeAt(0).toString(16).padStart(2, "0").toUpperCase()).join(":");
+    const lines = ["v=0", `o=- ${Date.now()} 2 IN IP4 127.0.0.1`, "s=-", "t=0 0", `a=group:BUNDLE ${mid}`, "a=msid-semantic: WMS",
+      "m=application 9 UDP/DTLS/SCTP webrtc-datachannel", "c=IN IP4 0.0.0.0",
+      ...cands.map((c, i) => { const [t, a, p, pr] = c.split(" "); return `a=candidate:${i + 1} 1 udp ${pr} ${a} ${p} typ ${CAND_TYPES[t] || "host"}${t === "h" ? "" : " raddr 0.0.0.0 rport 0"}`; }),
+      "a=end-of-candidates", `a=ice-ufrag:${u}`, `a=ice-pwd:${w}`, `a=fingerprint:sha-256 ${fp}`, `a=setup:${setup}`, `a=mid:${mid}`, "a=sctp-port:5000", "a=max-message-size:262144"];
+    const [id, name, emoji, device] = who || [];
+    return { kind, sdp: lines.join("\r\n") + "\r\n", peer: { id, name: String(name || "อุปกรณ์"), emoji: String(emoji || "📱"), device } };
+  }
+  const qrInviteUrl = (code) => `${location.origin}${location.pathname}#ff=${code.slice(QR_TAG.length)}`;
+
+  class BootLink {
+    constructor() {
+      const pc = this.pc = new RTCPeerConnection({ iceServers: CFG.ice_servers });
+      const dc = this.dc = pc.createDataChannel("boot", { negotiated: true, id: 0, ordered: true });
+      this.opened = new Promise((res, rej) => { dc.onopen = res; this.fail = rej; });
+      this.opened.catch(() => {});
+      dc.onmessage = (e) => { try { this.onmessage?.(JSON.parse(e.data)); } catch {} };
+      dc.onclose = () => { this.fail(new Error("closed")); this.onclose?.(); };
+      pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") this.close(); };
+    }
+    async gather() {
+      const pc = this.pc;
+      if (pc.iceGatheringState === "complete") return;
+      await new Promise((r) => {
+        const t = setTimeout(r, QR_GATHER_MS);
+        pc.addEventListener("icegatheringstatechange", () => { if (pc.iceGatheringState === "complete") { clearTimeout(t); r(); } });
+      });
+    }
+    async invite() { await this.pc.setLocalDescription(); await this.gather(); return packSdp("o", this.pc.localDescription.sdp); }
+    async answer(code) {
+      const m = unpackCode(code);
+      if (m.kind !== "o") throw new Error("kind");
+      this.peer = m.peer;
+      await this.pc.setRemoteDescription({ type: "offer", sdp: m.sdp });
+      await this.pc.setLocalDescription();
+      await this.gather();
+      return packSdp("a", this.pc.localDescription.sdp);
+    }
+    async accept(code) {
+      const m = unpackCode(code);
+      if (m.kind !== "a") throw new Error("kind");
+      this.peer = m.peer;
+      await this.pc.setRemoteDescription({ type: "answer", sdp: m.sdp });
+    }
+    async ready(ms = 20000) {
+      let t;
+      await Promise.race([this.opened, new Promise((_, rej) => { t = setTimeout(() => rej(new Error("timeout")), ms); })]).finally(() => clearTimeout(t));
+    }
+    send(o) { if (this.dc.readyState === "open") this.dc.send(JSON.stringify(o)); }
+    close() { try { this.dc.close(); } catch {} try { this.pc.close(); } catch {} this.fail(new Error("closed")); }
+  }
+  function joinLink(link) {
+    const name = link.peer?.name || "อุปกรณ์";
+    joinRoom("qr-" + rid(8), "qr", name, (roomId, h) => new LinkSignal(link, roomId, h));
+    toast(`เชื่อมต่อกับ ${name} แล้ว (ผ่าน QR)`);
+  }
+  function qrSvg(text) {
+    if (!window.qrcode) return "";
+    const q = qrcode(0, "L"); q.addData(text); q.make();
+    return q.createSvgTag({ cellSize: 3, margin: 0, scalable: true });
+  }
+  async function copyText(text, done = "คัดลอกรหัสแล้ว") {
+    try { await navigator.clipboard.writeText(text); toast(done); } catch { toast("คัดลอกไม่ได้", true); }
+  }
+
+  // กล้องอ่าน QR: BarcodeDetector ถ้ามี (Chrome/Android) ไม่งั้นโหลด jsQR (Safari/Firefox)
+  let jsqrLoad = null;
+  const loadScript = (src) => new Promise((res, rej) => {
+    const el = document.createElement("script");
+    el.src = src; el.onload = res; el.onerror = () => rej(new Error("load " + src));
+    document.head.appendChild(el);
+  });
+  async function qrDetector() {
+    try {
+      if ("BarcodeDetector" in window && (await BarcodeDetector.getSupportedFormats()).includes("qr_code")) {
+        const d = new BarcodeDetector({ formats: ["qr_code"] });
+        return async (src) => (await d.detect(src))[0]?.rawValue || null;
+      }
+    } catch {}
+    await (jsqrLoad ||= loadScript("assets/vendor/jsqr.min.js"));
+    return async (src, ctx, w, h) => { ctx.drawImage(src, 0, 0, w, h); return window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" })?.data || null; };
+  }
+  function attachScanner(holder, onCode) {
+    holder.hidden = false;
+    holder.innerHTML = `<video playsinline muted></video><div class="scan-msg">กำลังเปิดกล้อง…</div>`;
+    const video = holder.querySelector("video"), msg = holder.querySelector(".scan-msg");
+    let stream = null, stopped = false, timer = 0;
+    const stop = () => { stopped = true; clearTimeout(timer); stream?.getTracks().forEach((t) => t.stop()); holder.hidden = true; holder.innerHTML = ""; };
+    (async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) throw new Error("no camera");
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+        if (stopped) return stop();
+        video.srcObject = stream; await video.play();
+        msg.textContent = "ส่องกล้องไปที่ QR";
+        const detect = await qrDetector();
+        const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d", { willReadFrequently: true });
+        const tick = async () => {
+          if (stopped) return;
+          if (video.videoWidth) {
+            const k = Math.min(1, 640 / video.videoWidth);
+            canvas.width = Math.round(video.videoWidth * k); canvas.height = Math.round(video.videoHeight * k);
+            try { const text = await detect(video, ctx, canvas.width, canvas.height); if (text && !stopped) { stop(); return onCode(text); } } catch {}
+          }
+          timer = setTimeout(tick, 200);
+        };
+        tick();
+      } catch { if (!stopped) msg.textContent = "เปิดกล้องไม่ได้ — วางรหัสในช่องด้านล่างแทน"; }
+    })();
+    return stop;
+  }
+
+  // ฝั่ง A: สร้างรหัสเชิญ แล้วรอสแกน/วางรหัสตอบกลับ
+  async function qrInvite() {
+    if (!window.RTCPeerConnection) return;
+    const link = new BootLink();
+    let code;
+    try { code = await link.invite(); } catch { link.close(); return toast("สร้าง QR ไม่สำเร็จ", true); }
+    let linked = false;
+    await openModal((box, close, ctl) => {
+      box.innerHTML = `
+        <div class="m-title">จับคู่ด้วย QR</div>
+        <div class="m-sub">ไม่ผ่านเซิร์ฟเวอร์ — ใช้ได้แม้ระบบค้นหาอุปกรณ์ล่ม</div>
+        <div class="m-label qr-step">1. ให้อีกเครื่องสแกน QR นี้ด้วยกล้อง หรือส่งรหัสไปให้</div>
+        <div class="qr-big">${qrSvg(qrInviteUrl(code))}</div>
+        <div class="m-label qr-step">2. อีกเครื่องจะแสดงรหัสตอบกลับ — สแกนหรือวางที่นี่</div>
+        <div class="scan-box" hidden></div>
+        <textarea class="field code-field" placeholder="วางรหัสตอบกลับที่ขึ้นต้นด้วย ${QR_TAG}"></textarea>
+        <div class="m-status" aria-live="polite"></div>
+        <div class="m-actions"><button class="btn ghost" data-a="copy">คัดลอกรหัส</button><button class="btn" data-a="scan" autofocus>สแกนรหัสตอบกลับ</button></div>`;
+      const ta = box.querySelector(".code-field"), status = box.querySelector(".m-status");
+      let stopScan = null, busy = false;
+      const take = async (text) => {
+        if (busy) return;
+        busy = true; stopScan?.(); stopScan = null;
+        status.textContent = "กำลังเชื่อมต่อ…";
+        try {
+          await link.accept(text);
+          await link.ready();
+          linked = true; joinLink(link); close();
+        } catch (e) {
+          busy = false;
+          status.textContent = "";
+          ta.classList.remove("shake"); void ta.offsetWidth; ta.classList.add("shake");
+          toast(e.message === "kind" ? "นี่ไม่ใช่รหัสตอบกลับ — ให้อีกเครื่องสแกนรหัสเชิญก่อน" : e.message === "timeout" ? "เชื่อมต่อไม่สำเร็จ — ลองสร้าง QR ใหม่" : "รหัสไม่ถูกต้อง", true);
+          if (e.message === "timeout") close();
+        }
+      };
+      ta.addEventListener("input", () => { if (ta.value.trim().length > 20) take(ta.value); });
+      box.onclick = (e) => {
+        const a = e.target.closest("[data-a]")?.dataset.a;
+        if (a === "copy") copyText(qrInviteUrl(code));
+        else if (a === "scan" && !stopScan) stopScan = attachScanner(box.querySelector(".scan-box"), take);
+      };
+      ctl.onDismiss = () => { stopScan?.(); close(); };
+    });
+    if (!linked) link.close();
+  }
+
+  // ฝั่ง B: ได้รหัสเชิญ (จากลิงก์ สแกน หรือวาง) → แสดงรหัสตอบกลับ แล้วรอ A สแกน
+  async function qrAnswer(inviteCode) {
+    if (!window.RTCPeerConnection) return;
+    const link = new BootLink();
+    let code;
+    try { code = await link.answer(inviteCode); }
+    catch (e) { link.close(); return toast(e.message === "kind" ? "นี่เป็นรหัสตอบกลับ — ให้สแกนจากเครื่องที่สร้าง QR" : "รหัสไม่ถูกต้อง", true); }
+    const name = link.peer.name;
+    let linked = false;
+    await openModal((box, close, ctl) => {
+      box.innerHTML = `
+        <div class="m-head"><div class="m-avatar" style="--h:${hueOf(link.peer.id || name)}">${esc(link.peer.emoji)}</div>
+          <div><div class="m-title">ส่งรหัสตอบกลับให้ ${esc(name)}</div><div class="m-sub">ให้ ${esc(name)} กด "สแกนรหัสตอบกลับ" แล้วสแกน QR นี้</div></div></div>
+        <div class="qr-big">${qrSvg(code)}</div>
+        <div class="m-status" aria-live="polite">รอ ${esc(name)} สแกน…</div>
+        <div class="m-actions"><button class="btn ghost" data-a="close">ยกเลิก</button><button class="btn" data-a="copy">คัดลอกรหัส</button></div>`;
+      box.onclick = (e) => {
+        const a = e.target.closest("[data-a]")?.dataset.a;
+        if (a === "copy") copyText(code);
+        else if (a === "close") close();
+      };
+      ctl.onDismiss = () => close();
+      link.ready(5 * 60 * 1000).then(() => { linked = true; joinLink(link); close(); }, () => { if (!linked) { toast("เชื่อมต่อไม่สำเร็จ — ลองสร้าง QR ใหม่", true); close(); } });
+    });
+    if (!linked) link.close();
+  }
+
+  // สแกน/วางรหัสเชิญจากเครื่องอื่น
+  async function qrScanInvite() {
+    const code = await openModal((box, close, ctl) => {
+      box.innerHTML = `
+        <div class="m-title">สแกน QR จากอีกเครื่อง</div>
+        <div class="m-sub">ให้อีกเครื่องกด "สร้าง QR" แล้วส่องกล้องที่ QR นั้น</div>
+        <div class="scan-box" hidden></div>
+        <textarea class="field code-field" placeholder="หรือวางรหัส/ลิงก์ที่ได้รับที่นี่"></textarea>
+        <div class="m-actions"><button class="btn ghost" data-v="0">ยกเลิก</button><button class="btn" data-v="1" autofocus>เชื่อมต่อ</button></div>`;
+      const ta = box.querySelector(".code-field");
+      const stop = attachScanner(box.querySelector(".scan-box"), (text) => close(text));
+      const done = (v) => { stop(); close(v); };
+      ta.addEventListener("input", () => { if (/#ff=[\w-]{20,}|FF1\.[\w-]{20,}/.test(ta.value)) done(ta.value); });
+      box.onclick = (e) => { const b = e.target.closest("[data-v]"); if (b) done(b.dataset.v === "1" ? ta.value : null); };
+      ctl.onDismiss = () => done(null);
+    });
+    if (code && code.trim()) qrAnswer(code);
+  }
+
+  /* ================= แจ้งเตือนเมื่อต่อระบบค้นหาอุปกรณ์ไม่ได้ ================= */
+  let bannerBase = null; // ข้อความปกติ (เช่นโหมดทดสอบ TURN) — คืนค่าเมื่อเลิกแจ้งเตือน
+  function showBanner(text, actions = []) {
+    const el = $("banner");
+    el.hidden = false;
+    el.innerHTML = "";
+    const span = document.createElement("span");
+    span.textContent = text;
+    el.appendChild(span);
+    if (actions.length) {
+      const row = document.createElement("span");
+      row.className = "banner-actions";
+      for (const [label, fn] of actions) {
+        const b = document.createElement("button");
+        b.className = "mini-btn"; b.type = "button"; b.textContent = label; b.onclick = fn;
+        row.appendChild(b);
+      }
+      el.appendChild(row);
+    }
+  }
+  function hideBanner() { if (bannerBase) showBanner(bannerBase); else { $("banner").hidden = true; $("banner").innerHTML = ""; } }
+  function retryNet() {
+    const [id, r] = [...rooms].find(([, r]) => r.kind === "net") || [];
+    if (!id) return;
+    leaveRoom(id);
+    joinRoom(id, "net", r.label);
+    toast("กำลังลองเชื่อมต่อใหม่…");
+  }
+  function netStatus(s) {
+    if (!trystero) return; // โหมดแท็บเดียว: แถบแจ้งเตือนตอน boot ค้างไว้
+    if (s === "error") showBanner("เชื่อมต่อระบบค้นหาอุปกรณ์ไม่ได้ — เครื่องอื่นจะยังไม่เห็นเครื่องนี้", [["ลองใหม่", retryNet], ["จับคู่ด้วย QR", qrInvite]]);
+    else if (s === "live") hideBanner();
+  }
 
   /* ================= ICE (STUN/TURN) refresh ================= */
   // credential TURN มีอายุ — ดึงใหม่ก่อนหมด (การเชื่อมต่อที่เปิดอยู่แล้วไม่กระทบ)
@@ -1041,26 +1370,33 @@
       ]);
       if (cfg.ice_servers?.length) CFG.ice_servers = cfg.ice_servers;
       CFG.turn = !!cfg.turn;
+      CFG.nostr_relays = cfg.nostr_relays || [];
       scheduleIceRefresh(600);
-      if (cfg.supabase_url && cfg.supabase_anon_key && window.supabase) {
-        supa = window.supabase.createClient(cfg.supabase_url, cfg.supabase_anon_key, { realtime: { params: { eventsPerSecond: 40 } } });
-      }
       netRoom = room.room || null;
     } catch {}
-    if (!supa) {
-      $("banner").hidden = false;
-      $("banner").textContent = "โหมดทดสอบ: ยังไม่ได้ตั้งค่า Supabase จึงเห็นเฉพาะแท็บอื่นในเบราว์เซอร์นี้";
-    } else if (FORCE_RELAY) {
-      $("banner").hidden = false;
-      $("banner").textContent = CFG.turn
+    try { trystero = await import("./vendor/trystero.min.mjs"); } catch { trystero = null; }
+    if (FORCE_RELAY) {
+      bannerBase = CFG.turn
         ? "โหมดทดสอบ TURN: บังคับส่งผ่าน TURN server (ให้อีกเครื่องเปิดลิงก์ที่มี ?relay=1 ด้วย)"
         : "โหมดทดสอบ TURN: เซิร์ฟเวอร์ยังไม่ได้ตั้ง TURN — จะเชื่อมต่อไม่ได้";
+      showBanner(bannerBase);
+    }
+    if (!trystero) {
+      // โหลดระบบค้นหาไม่ได้ → เห็นเฉพาะแท็บในเบราว์เซอร์นี้ + ทางสำรอง QR
+      bannerBase = null;
+      showBanner("โหลดระบบค้นหาอุปกรณ์ไม่สำเร็จ — ตอนนี้เห็นเฉพาะแท็บอื่นในเบราว์เซอร์นี้", [["โหลดใหม่", () => location.reload()], ["จับคู่ด้วย QR", qrInvite]]);
     }
     joinRoom(netRoom || "local", "net", "เครือข่ายเดียวกัน");
     const params = new URLSearchParams(location.search);
     const pair = params.get("room");
     if (pair && joinPair(pair)) toast(`เข้าห้อง ${pair.toUpperCase()} แล้ว`);
     if (pair) history.replaceState(null, "", location.pathname);
+    // เปิดจากลิงก์/QR เชิญ (#ff=...) → แสดงรหัสตอบกลับทันที (hash ไม่ถูกส่งไปที่เซิร์ฟเวอร์)
+    if (location.hash.startsWith("#ff=")) {
+      const invite = location.hash;
+      history.replaceState(null, "", location.pathname + location.search);
+      qrAnswer(invite);
+    }
     addEventListener("pagehide", () => rooms.forEach((r) => r.signal.stop()));
     layout();
   }
