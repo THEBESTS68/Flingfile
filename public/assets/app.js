@@ -1006,6 +1006,7 @@
       <div class="m-section">
         <div class="m-title" style="font-size:15px">กรอกรหัสเพื่อเชื่อมต่อ</div>
         <div class="otp" id="otp" style="margin-top:12px"></div>
+        <div class="m-actions one"><button class="btn" data-a="enter" disabled>เข้าห้อง</button></div>
       </div>`;
     if (existing) box.querySelector('[data-a="join"]').disabled = true;
     if (window.qrcode) { const q = qrcode(0, "M"); q.addData(pairLink(code)); q.make(); box.querySelector("#qr").innerHTML = q.createSvgTag({ cellSize: 3, margin: 0, scalable: true }); }
@@ -1013,28 +1014,44 @@
     const otp = box.querySelector("#otp");
     const boxes = Array.from({ length: 6 }, (_, i) => {
       const el = document.createElement("input");
-      el.maxLength = 1; el.autocomplete = "off"; el.spellcheck = false; el.setAttribute("aria-label", `รหัสหลักที่ ${i + 1}`);
+      // ไม่ใช้ maxLength (แป้นพิมพ์ Android บางรุ่นพิมพ์ไม่ติด) — จัดการตัวเกินเองใน input
+      el.autocomplete = "off"; el.spellcheck = false; el.autocapitalize = "characters";
+      el.setAttribute("autocorrect", "off"); el.enterKeyHint = i === 5 ? "go" : "next"; el.setAttribute("aria-label", `รหัสหลักที่ ${i + 1}`);
       otp.appendChild(el);
       return el;
     });
     const clean = (s) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const tryJoin = () => {
+    const enterBtn = box.querySelector('[data-a="enter"]');
+    const shake = () => { otp.classList.remove("shake"); void otp.offsetWidth; otp.classList.add("shake"); };
+    let warnedLang = false;
+    const tryJoin = (manual = false) => {
       const v = boxes.map((b) => b.value).join("");
-      if (v.length < 6) return;
+      enterBtn.disabled = v.length < 6;
+      if (v.length < 6) { if (manual) { shake(); toast("กรอกรหัสให้ครบ 6 ตัว", true); } return; }
       if (v === code && !existing) { joinPair(code); toast("เปิดห้อง " + code + " แล้ว"); return close(); }
       if (joinPair(v)) { toast("เข้าห้อง " + v + " แล้ว — รออีกเครื่อง…"); close(); }
-      else { otp.classList.remove("shake"); void otp.offsetWidth; otp.classList.add("shake"); }
+      else shake();
     };
     const fill = (s, start) => { [...clean(s)].slice(0, 6 - start).forEach((c, k) => (boxes[start + k].value = c)); (boxes.find((b) => !b.value) || boxes[5]).focus(); tryJoin(); };
     boxes.forEach((b, i) => {
-      b.addEventListener("input", () => { const v = clean(b.value); if (v.length > 1) { b.value = ""; return fill(v, i); } b.value = v; if (v && i < 5) boxes[i + 1].focus(); tryJoin(); });
-      b.addEventListener("keydown", (e) => { if (e.key === "Backspace" && !b.value && i > 0) { boxes[i - 1].value = ""; boxes[i - 1].focus(); e.preventDefault(); } });
+      b.addEventListener("focus", () => b.select()); // แตะช่องที่มีตัวแล้ว พิมพ์ทับได้เลย
+      b.addEventListener("input", () => {
+        const raw = b.value, v = clean(raw);
+        if (raw && !v && !warnedLang) { warnedLang = true; toast("รหัสมีแค่ A–Z และ 0–9 — สลับแป้นพิมพ์เป็นภาษาอังกฤษ", true, 4500); }
+        if (v.length > 1) { b.value = ""; return fill(v, i); }
+        b.value = v; if (v && i < 5) boxes[i + 1].focus(); tryJoin();
+      });
+      b.addEventListener("keydown", (e) => {
+        if (e.key === "Backspace" && !b.value && i > 0) { boxes[i - 1].value = ""; boxes[i - 1].focus(); e.preventDefault(); tryJoin(); }
+        else if (e.key === "Enter") { e.preventDefault(); tryJoin(true); }
+      });
       b.addEventListener("paste", (e) => { e.preventDefault(); fill(e.clipboardData.getData("text"), i); });
     });
     box.onclick = async (e) => {
       const a = e.target.closest("[data-a]")?.dataset.a;
       if (a === "copy") { try { await navigator.clipboard.writeText(pairLink(code)); toast("คัดลอกลิงก์แล้ว"); } catch { toast("คัดลอกไม่ได้", true); } if (!existing) joinPair(code); }
       else if (a === "join") { joinPair(code); toast("เปิดห้อง " + code + " แล้ว — รออีกเครื่องเข้ามา"); close(); }
+      else if (a === "enter") tryJoin(true);
     };
   });
 
