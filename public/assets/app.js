@@ -50,7 +50,34 @@
     const ua = navigator.userAgent;
     const os = /iPhone/.test(ua) ? "iPhone" : /iPad|Macintosh.*Mobile/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? "iPad"
       : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows" : /Mac OS X/.test(ua) ? "macOS" : /CrOS/.test(ua) ? "ChromeOS" : /Linux/.test(ua) ? "Linux" : "อุปกรณ์";
-    const br = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
+    // เรียงจากเจาะจงไปทั่วไป: แอปที่เปิดเว็บในตัว → เบราว์เซอร์เฉพาะเจ้า → Chrome/Safari (เกือบทุกเจ้าใส่คำว่า Chrome/Safari ใน UA)
+    const BROWSERS = [
+      [/\bLine\//, "LINE"], [/FBAN|FBAV|FB_IAB/, "Facebook"], [/Instagram/, "Instagram"], [/musical_ly|BytedanceWebview|TikTok/, "TikTok"],
+      [/DuckDuckGo\//, "DuckDuckGo"], [/SamsungBrowser\//, "Samsung Internet"], [/MiuiBrowser\//, "Mi Browser"], [/HuaweiBrowser\//, "Huawei Browser"],
+      [/YaBrowser\//, "Yandex"], [/UCBrowser\//, "UC Browser"], [/Whale\//, "Whale"], [/Vivaldi\//, "Vivaldi"],
+      [/Edg(e|A|iOS)?\//, "Edge"], [/OPR\/|OPT\/|OPiOS\//, "Opera"], [/Firefox\/|FxiOS\//, "Firefox"],
+      [/Chrome\/|CriOS\//, "Chrome"], [/Safari\//, "Safari"],
+    ];
+    const br = (BROWSERS.find(([re]) => re.test(ua)) || [, ""])[1];
+    return br ? `${os} · ${br}` : os;
+  }
+
+  // ข้อมูลที่ UA ไม่บอก (Brave, Opera GX, Windows 11) ถามแบบ async จาก userAgentData — มีเฉพาะเบราว์เซอร์ตระกูล Chromium
+  async function refineDeviceLabel(label) {
+    let [os, br] = label.split(" · ");
+    try {
+      const uad = navigator.userAgentData;
+      const brands = (uad?.brands || []).map((b) => b.brand);
+      if (await navigator.brave?.isBrave?.()) br = "Brave";
+      else if (brands.includes("Opera GX")) br = "Opera GX";
+      else if (brands.includes("Brave")) br = "Brave";
+      else if (brands.includes("Vivaldi")) br = "Vivaldi";
+      if (os === "Windows" && uad?.getHighEntropyValues) {
+        const { platformVersion } = await uad.getHighEntropyValues(["platformVersion"]);
+        const major = parseInt(platformVersion, 10);
+        if (major >= 13) os = "Windows 11"; else if (major > 0) os = "Windows 10";
+      }
+    } catch {}
     return br ? `${os} · ${br}` : os;
   }
 
@@ -122,7 +149,7 @@
         const old = this.seen.get(m.peer.id);
         this.seen.set(m.peer.id, { t: Date.now(), peer: m.peer });
         if (!old) { this.h.join(m.peer); this.hello(); }
-        else if (old.peer.name !== m.peer.name || old.peer.emoji !== m.peer.emoji) this.h.update(m.peer);
+        else if (old.peer.name !== m.peer.name || old.peer.emoji !== m.peer.emoji || old.peer.device !== m.peer.device) this.h.update(m.peer);
       } else if (m.k === "bye" && this.seen.delete(m.id)) this.h.leave(m.id);
       else if (m.k === "sig" && m.to === me.id) this.h.signal(m.from, m.data);
     }
@@ -153,7 +180,7 @@
         const old = this.seen.get(key);
         this.seen.set(key, peer);
         if (!old) this.h.join(peer);
-        else if (old.name !== peer.name || old.emoji !== peer.emoji) this.h.update(peer);
+        else if (old.name !== peer.name || old.emoji !== peer.emoji || old.device !== peer.device) this.h.update(peer);
       }
       for (const id of [...this.seen.keys()]) if (!now.has(id)) { this.seen.delete(id); this.h.leave(id); }
     }
@@ -995,6 +1022,12 @@
   async function boot() {
     document.body.insertAdjacentHTML("beforeend", '<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#38bdf8"/></linearGradient></defs></svg>');
     renderMe();
+    refineDeviceLabel(me.device).then((d) => {
+      if (d === me.device) return;
+      me.device = d;
+      renderMe();
+      rooms.forEach((r) => r.signal.update());
+    });
     if (!window.RTCPeerConnection) {
       $("banner").hidden = false;
       $("banner").textContent = "เบราว์เซอร์นี้ไม่รองรับ WebRTC — ลองใช้ Chrome, Edge, Safari หรือ Firefox รุ่นใหม่";
