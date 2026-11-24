@@ -131,7 +131,17 @@
     const focusable = box.querySelector("[autofocus]") || box.querySelector("input, textarea, .btn");
     focusable && setTimeout(() => focusable.focus(), 60);
   }
-  $("modalWrap").addEventListener("pointerdown", (e) => { if (e.target === $("modalWrap") && modalOpen) (modalOpen.onDismiss || modalOpen.close)(); });
+  const dismissModal = () => { if (modalOpen) (modalOpen.onDismiss || modalOpen.close)(); };
+  $("modalWrap").addEventListener("pointerdown", (e) => { if (e.target === $("modalWrap")) dismissModal(); });
+  $("modalClose").addEventListener("click", dismissModal);
+  // มือถือ: วางหน้าต่างกลาง "พื้นที่ที่มองเห็นจริง" — ไม่ให้แถบเบราว์เซอร์หรือคีย์บอร์ดดันหน้าต่างหลุดกลางจอ
+  if (window.visualViewport) {
+    const vv = window.visualViewport, wrap = $("modalWrap");
+    const fit = () => { wrap.style.top = vv.offsetTop + "px"; wrap.style.height = vv.height + "px"; wrap.style.setProperty("--vvh", vv.height + "px"); };
+    vv.addEventListener("resize", fit);
+    vv.addEventListener("scroll", fit);
+    fit();
+  }
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") { if (modalOpen) (modalOpen.onDismiss || modalOpen.close)(); hidePopover(); } });
 
   /* ================= signaling ================= */
@@ -981,7 +991,8 @@
     joinRoom("pair-" + code, "pair", code);
     return true;
   }
-  $("pairBtn").onclick = () => openModal((box, close) => {
+  // ระบบค้นหาล่ม → รหัสห้องใช้ไม่ได้ (ต้องผ่าน relay) จึงพาไปจับคู่ด้วย QR แทน
+  $("pairBtn").onclick = () => netDown() ? qrStart() : openModal((box, close) => {
     const existing = [...rooms.values()].find((r) => r.kind === "pair");
     const code = existing?.label || Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => PAIR_ALPHABET[b % PAIR_ALPHABET.length]).join("");
     box.innerHTML = `
@@ -995,11 +1006,6 @@
       <div class="m-section">
         <div class="m-title" style="font-size:15px">กรอกรหัสเพื่อเชื่อมต่อ</div>
         <div class="otp" id="otp" style="margin-top:12px"></div>
-      </div>
-      <div class="m-section">
-        <div class="m-title" style="font-size:15px">จับคู่ด้วย QR ไม่ผ่านเซิร์ฟเวอร์</div>
-        <div class="m-sub">ใช้เมื่อเครื่องหากันไม่เจอ — สแกน QR กันสองรอบ</div>
-        <div class="m-actions"><button class="btn ghost" data-a="qrscan">สแกน QR</button><button class="btn" data-a="qrmake">สร้าง QR</button></div>
       </div>`;
     if (existing) box.querySelector('[data-a="join"]').disabled = true;
     if (window.qrcode) { const q = qrcode(0, "M"); q.addData(pairLink(code)); q.make(); box.querySelector("#qr").innerHTML = q.createSvgTag({ cellSize: 3, margin: 0, scalable: true }); }
@@ -1029,8 +1035,6 @@
       const a = e.target.closest("[data-a]")?.dataset.a;
       if (a === "copy") { try { await navigator.clipboard.writeText(pairLink(code)); toast("คัดลอกลิงก์แล้ว"); } catch { toast("คัดลอกไม่ได้", true); } if (!existing) joinPair(code); }
       else if (a === "join") { joinPair(code); toast("เปิดห้อง " + code + " แล้ว — รออีกเครื่องเข้ามา"); close(); }
-      else if (a === "qrmake") { close(); qrInvite(); }
-      else if (a === "qrscan") { close(); qrScanInvite(); }
     };
   });
 
@@ -1176,97 +1180,140 @@
     return stop;
   }
 
-  // ฝั่ง A: สร้างรหัสเชิญ แล้วรอสแกน/วางรหัสตอบกลับ
-  async function qrInvite() {
+  // ใช้เฉพาะตอนระบบค้นหาอุปกรณ์ล่ม (ตอนปกติใช้รหัสห้อง 6 หลักซึ่งง่ายกว่า)
+  // ขั้นตอน: เครื่องหนึ่ง "แสดง QR" อีกเครื่อง "สแกน QR" แล้วสลับกันสแกนอีกครั้ง
+  const netDown = () => !trystero || [...rooms.values()].some((r) => r.kind === "net" && r.status === "error");
+  const stepSub = (n, text) => `<div class="m-sub">ขั้น ${n} จาก 2 · ${text}</div>`;
+
+  // เริ่ม: ถามว่าเครื่องนี้จะแสดงหรือสแกน
+  async function qrStart() {
     if (!window.RTCPeerConnection) return;
+    const choice = await openModal((box, close) => {
+      box.innerHTML = `
+        <div class="m-title">จับคู่ด้วย QR</div>
+        <div class="m-sub">ระบบค้นหาอุปกรณ์ใช้ไม่ได้ตอนนี้ — จับคู่ตรงด้วย QR แทนได้ ไม่ผ่านเซิร์ฟเวอร์</div>
+        <div class="text-view qr-how">เครื่องหนึ่งกด <b>แสดง QR</b> อีกเครื่องกด <b>สแกน QR</b><br>แล้วทำตามที่หน้าจอบอก (สแกนกันคนละครั้ง)</div>
+        <div class="m-actions"><button class="btn ghost" data-v="scan">สแกน QR</button><button class="btn" data-v="show" autofocus>แสดง QR</button></div>`;
+      box.onclick = (e) => { const b = e.target.closest("[data-v]"); if (b) close(b.dataset.v); };
+    });
+    if (choice === "show") qrShow();
+    else if (choice === "scan") qrScan();
+  }
+
+  // ช่อง "ไม่มีกล้อง? วางรหัสแทน" — ซ่อนไว้จนกว่าจะกด
+  const pasteHtml = (label) => `<button class="m-link" type="button" data-a="paste">${label}</button>
+    <textarea class="field code-field" hidden placeholder="วางรหัสหรือลิงก์ที่อีกเครื่องคัดลอกให้"></textarea>`;
+
+  // เครื่องที่ "แสดง QR": ขั้น 1 แสดง QR ให้อีกเครื่องสแกน → ขั้น 2 สแกน QR ที่ขึ้นบนอีกเครื่อง
+  async function qrShow() {
     const link = new BootLink();
     let code;
     try { code = await link.invite(); } catch { link.close(); return toast("สร้าง QR ไม่สำเร็จ", true); }
+    const url = qrInviteUrl(code);
     let linked = false;
     await openModal((box, close, ctl) => {
-      box.innerHTML = `
-        <div class="m-title">จับคู่ด้วย QR</div>
-        <div class="m-sub">ไม่ผ่านเซิร์ฟเวอร์ — ใช้ได้แม้ระบบค้นหาอุปกรณ์ล่ม</div>
-        <div class="m-label qr-step">1. ให้อีกเครื่องสแกน QR นี้ด้วยกล้อง หรือส่งรหัสไปให้</div>
-        <div class="qr-big">${qrSvg(qrInviteUrl(code))}</div>
-        <div class="m-label qr-step">2. อีกเครื่องจะแสดงรหัสตอบกลับ — สแกนหรือวางที่นี่</div>
-        <div class="scan-box" hidden></div>
-        <textarea class="field code-field" placeholder="วางรหัสตอบกลับที่ขึ้นต้นด้วย ${QR_TAG}"></textarea>
-        <div class="m-status" aria-live="polite"></div>
-        <div class="m-actions"><button class="btn ghost" data-a="copy">คัดลอกรหัส</button><button class="btn" data-a="scan" autofocus>สแกนรหัสตอบกลับ</button></div>`;
-      const ta = box.querySelector(".code-field"), status = box.querySelector(".m-status");
       let stopScan = null, busy = false;
       const take = async (text) => {
         if (busy) return;
         busy = true; stopScan?.(); stopScan = null;
+        const status = box.querySelector(".m-status");
         status.textContent = "กำลังเชื่อมต่อ…";
         try {
           await link.accept(text);
           await link.ready();
           linked = true; joinLink(link); close();
         } catch (e) {
-          busy = false;
-          status.textContent = "";
-          ta.classList.remove("shake"); void ta.offsetWidth; ta.classList.add("shake");
-          toast(e.message === "kind" ? "นี่ไม่ใช่รหัสตอบกลับ — ให้อีกเครื่องสแกนรหัสเชิญก่อน" : e.message === "timeout" ? "เชื่อมต่อไม่สำเร็จ — ลองสร้าง QR ใหม่" : "รหัสไม่ถูกต้อง", true);
-          if (e.message === "timeout") close();
+          busy = false; status.textContent = "";
+          if (e.message === "timeout") { toast("เชื่อมต่อไม่สำเร็จ — ลองจับคู่ใหม่อีกครั้ง", true); return close(); }
+          toast(e.message === "kind" ? "QR นี้ยังไม่ใช่ — ให้อีกเครื่องสแกน QR ของเครื่องนี้ก่อน" : "อ่านรหัสไม่ได้ — ลองใหม่อีกครั้ง", true);
+          if (box.querySelector(".scan-box")) stopScan = attachScanner(box.querySelector(".scan-box"), take);
         }
       };
-      ta.addEventListener("input", () => { if (ta.value.trim().length > 20) take(ta.value); });
+      const step1 = () => {
+        stopScan?.(); stopScan = null;
+        box.innerHTML = `
+          <div class="m-title">แสดง QR</div>
+          ${stepSub(1, "ให้อีกเครื่องสแกน QR นี้ (ใช้กล้องมือถือได้เลย)")}
+          <div class="qr-big">${qrSvg(url)}</div>
+          <button class="m-link" type="button" data-a="copy">ไม่มีกล้อง? คัดลอกลิงก์ส่งไปให้แทน</button>
+          <div class="m-actions"><button class="btn ghost" data-a="cancel">ยกเลิก</button><button class="btn" data-a="next" autofocus>อีกเครื่องสแกนแล้ว</button></div>`;
+        box.querySelector("[autofocus]").focus();
+      };
+      const step2 = () => {
+        box.innerHTML = `
+          <div class="m-title">สแกน QR บนอีกเครื่อง</div>
+          ${stepSub(2, "อีกเครื่องจะขึ้น QR ใหม่ — ส่องกล้องเครื่องนี้ไปที่ QR นั้น")}
+          <div class="scan-box"></div>
+          ${pasteHtml("ไม่มีกล้อง? วางรหัสแทน")}
+          <div class="m-status" aria-live="polite"></div>
+          <div class="m-actions one"><button class="btn ghost" data-a="back">ย้อนกลับไปที่ QR</button></div>`;
+        const ta = box.querySelector(".code-field");
+        ta.addEventListener("input", () => { if (ta.value.trim().length > 20) take(ta.value); });
+        stopScan = attachScanner(box.querySelector(".scan-box"), take);
+      };
       box.onclick = (e) => {
         const a = e.target.closest("[data-a]")?.dataset.a;
-        if (a === "copy") copyText(qrInviteUrl(code));
-        else if (a === "scan" && !stopScan) stopScan = attachScanner(box.querySelector(".scan-box"), take);
+        if (a === "copy") copyText(url, "คัดลอกลิงก์แล้ว — ส่งให้อีกเครื่องเปิด");
+        else if (a === "next") step2();
+        else if (a === "back") step1();
+        else if (a === "paste") { stopScan?.(); stopScan = null; e.target.hidden = true; const ta = box.querySelector(".code-field"); ta.hidden = false; ta.focus(); }
+        else if (a === "cancel") close();
       };
       ctl.onDismiss = () => { stopScan?.(); close(); };
+      step1();
     });
     if (!linked) link.close();
   }
 
-  // ฝั่ง B: ได้รหัสเชิญ (จากลิงก์ สแกน หรือวาง) → แสดงรหัสตอบกลับ แล้วรอ A สแกน
-  async function qrAnswer(inviteCode) {
+  // เครื่องที่ "สแกน QR": ขั้น 1 สแกน QR บนอีกเครื่อง → ขั้น 2 (qrReply) แสดง QR ให้อีกเครื่องสแกนกลับ
+  async function qrScan() {
+    const code = await openModal((box, close, ctl) => {
+      box.innerHTML = `
+        <div class="m-title">สแกน QR</div>
+        ${stepSub(1, "ส่องกล้องไปที่ QR บนอีกเครื่อง")}
+        <div class="scan-box"></div>
+        ${pasteHtml("ไม่มีกล้อง? วางลิงก์หรือรหัสแทน")}
+        <div class="m-actions one"><button class="btn ghost" data-a="cancel">ยกเลิก</button></div>`;
+      const ta = box.querySelector(".code-field");
+      let stop = attachScanner(box.querySelector(".scan-box"), (text) => close(text));
+      const done = (v) => { stop?.(); close(v); };
+      ta.addEventListener("input", () => { if (/#ff=[\w-]{20,}|FF1\.[\w-]{20,}/.test(ta.value)) done(ta.value); });
+      box.onclick = (e) => {
+        const a = e.target.closest("[data-a]")?.dataset.a;
+        if (a === "paste") { stop?.(); stop = null; e.target.hidden = true; ta.hidden = false; ta.focus(); }
+        else if (a === "cancel") done(null);
+      };
+      ctl.onDismiss = () => done(null);
+    });
+    if (code && code.trim()) qrReply(code);
+  }
+
+  // ขั้น 2 ของเครื่องที่สแกน (หรือเปิดจากลิงก์ #ff=): แสดง QR ให้เครื่องแรกสแกนกลับ แล้วรอเชื่อมต่อ
+  async function qrReply(inviteCode) {
     if (!window.RTCPeerConnection) return;
     const link = new BootLink();
     let code;
     try { code = await link.answer(inviteCode); }
-    catch (e) { link.close(); return toast(e.message === "kind" ? "นี่เป็นรหัสตอบกลับ — ให้สแกนจากเครื่องที่สร้าง QR" : "รหัสไม่ถูกต้อง", true); }
+    catch (e) { link.close(); return toast(e.message === "kind" ? "QR นี้ใช้ไม่ได้ — ให้สแกน QR จากเครื่องที่กด \"แสดง QR\"" : "อ่านรหัสไม่ได้ — ลองใหม่อีกครั้ง", true); }
     const name = link.peer.name;
     let linked = false;
     await openModal((box, close, ctl) => {
       box.innerHTML = `
         <div class="m-head"><div class="m-avatar" style="--h:${hueOf(link.peer.id || name)}">${esc(link.peer.emoji)}</div>
-          <div><div class="m-title">ส่งรหัสตอบกลับให้ ${esc(name)}</div><div class="m-sub">ให้ ${esc(name)} กด "สแกนรหัสตอบกลับ" แล้วสแกน QR นี้</div></div></div>
+          <div><div class="m-title">ให้ ${esc(name)} สแกน QR นี้</div>${stepSub(2, `บนเครื่อง ${esc(name)} ส่องกล้องมาที่จอนี้`)}</div></div>
         <div class="qr-big">${qrSvg(code)}</div>
         <div class="m-status" aria-live="polite">รอ ${esc(name)} สแกน…</div>
-        <div class="m-actions"><button class="btn ghost" data-a="close">ยกเลิก</button><button class="btn" data-a="copy">คัดลอกรหัส</button></div>`;
+        <button class="m-link" type="button" data-a="copy">ไม่มีกล้อง? คัดลอกรหัสส่งไปให้แทน</button>
+        <div class="m-actions one"><button class="btn ghost" data-a="close">ยกเลิก</button></div>`;
       box.onclick = (e) => {
         const a = e.target.closest("[data-a]")?.dataset.a;
         if (a === "copy") copyText(code);
         else if (a === "close") close();
       };
       ctl.onDismiss = () => close();
-      link.ready(5 * 60 * 1000).then(() => { linked = true; joinLink(link); close(); }, () => { if (!linked) { toast("เชื่อมต่อไม่สำเร็จ — ลองสร้าง QR ใหม่", true); close(); } });
+      link.ready(5 * 60 * 1000).then(() => { linked = true; joinLink(link); close(); }, () => { if (!linked) { toast("เชื่อมต่อไม่สำเร็จ — ลองจับคู่ใหม่อีกครั้ง", true); close(); } });
     });
     if (!linked) link.close();
-  }
-
-  // สแกน/วางรหัสเชิญจากเครื่องอื่น
-  async function qrScanInvite() {
-    const code = await openModal((box, close, ctl) => {
-      box.innerHTML = `
-        <div class="m-title">สแกน QR จากอีกเครื่อง</div>
-        <div class="m-sub">ให้อีกเครื่องกด "สร้าง QR" แล้วส่องกล้องที่ QR นั้น</div>
-        <div class="scan-box" hidden></div>
-        <textarea class="field code-field" placeholder="หรือวางรหัส/ลิงก์ที่ได้รับที่นี่"></textarea>
-        <div class="m-actions"><button class="btn ghost" data-v="0">ยกเลิก</button><button class="btn" data-v="1" autofocus>เชื่อมต่อ</button></div>`;
-      const ta = box.querySelector(".code-field");
-      const stop = attachScanner(box.querySelector(".scan-box"), (text) => close(text));
-      const done = (v) => { stop(); close(v); };
-      ta.addEventListener("input", () => { if (/#ff=[\w-]{20,}|FF1\.[\w-]{20,}/.test(ta.value)) done(ta.value); });
-      box.onclick = (e) => { const b = e.target.closest("[data-v]"); if (b) done(b.dataset.v === "1" ? ta.value : null); };
-      ctl.onDismiss = () => done(null);
-    });
-    if (code && code.trim()) qrAnswer(code);
   }
 
   /* ================= แจ้งเตือนเมื่อต่อระบบค้นหาอุปกรณ์ไม่ได้ ================= */
@@ -1290,17 +1337,22 @@
     }
   }
   function hideBanner() { if (bannerBase) showBanner(bannerBase); else { $("banner").hidden = true; $("banner").innerHTML = ""; } }
-  function retryNet() {
+  function retryNet(silent = false) {
     const [id, r] = [...rooms].find(([, r]) => r.kind === "net") || [];
     if (!id) return;
     leaveRoom(id);
     joinRoom(id, "net", r.label);
-    toast("กำลังลองเชื่อมต่อใหม่…");
+    if (!silent) toast("กำลังลองเชื่อมต่อใหม่…");
   }
+  const NET_RETRY_MS = 15000;
+  let netRetryTimer = 0;
   function netStatus(s) {
     if (!trystero) return; // โหมดแท็บเดียว: แถบแจ้งเตือนตอน boot ค้างไว้
-    if (s === "error") showBanner("เชื่อมต่อระบบค้นหาอุปกรณ์ไม่ได้ — เครื่องอื่นจะยังไม่เห็นเครื่องนี้", [["ลองใหม่", retryNet], ["จับคู่ด้วย QR", qrInvite]]);
-    else if (s === "live") hideBanner();
+    if (s === "error") {
+      showBanner("เชื่อมต่อระบบค้นหาอุปกรณ์ไม่ได้ — เครื่องอื่นจะยังไม่เห็นเครื่องนี้", [["ลองใหม่", () => retryNet()], ["จับคู่ด้วย QR", qrStart]]);
+      // relay ที่เคยล่มจะถูกพักนานขึ้นเรื่อยๆ → ลองต่อใหม่เองเป็นระยะ ไม่ต้องรอผู้ใช้กด
+      netRetryTimer ||= setInterval(() => retryNet(true), NET_RETRY_MS);
+    } else if (s === "live") { clearInterval(netRetryTimer); netRetryTimer = 0; hideBanner(); }
   }
 
   /* ================= ICE (STUN/TURN) refresh ================= */
@@ -1384,7 +1436,7 @@
     if (!trystero) {
       // โหลดระบบค้นหาไม่ได้ → เห็นเฉพาะแท็บในเบราว์เซอร์นี้ + ทางสำรอง QR
       bannerBase = null;
-      showBanner("โหลดระบบค้นหาอุปกรณ์ไม่สำเร็จ — ตอนนี้เห็นเฉพาะแท็บอื่นในเบราว์เซอร์นี้", [["โหลดใหม่", () => location.reload()], ["จับคู่ด้วย QR", qrInvite]]);
+      showBanner("โหลดระบบค้นหาอุปกรณ์ไม่สำเร็จ — ตอนนี้เห็นเฉพาะแท็บอื่นในเบราว์เซอร์นี้", [["โหลดใหม่", () => location.reload()], ["จับคู่ด้วย QR", qrStart]]);
     }
     joinRoom(netRoom || "local", "net", "เครือข่ายเดียวกัน");
     const params = new URLSearchParams(location.search);
@@ -1395,7 +1447,7 @@
     if (location.hash.startsWith("#ff=")) {
       const invite = location.hash;
       history.replaceState(null, "", location.pathname + location.search);
-      qrAnswer(invite);
+      qrReply(invite);
     }
     addEventListener("pagehide", () => rooms.forEach((r) => r.signal.stop()));
     layout();
