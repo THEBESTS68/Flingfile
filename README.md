@@ -30,8 +30,6 @@
 ค่าเริ่มต้นใช้ Trystero ผ่าน Nostr relay สาธารณะ ใช้ได้ทันทีหลัง deploy
 - ข้อมูลจับมือ (SDP) ถูกเข้ารหัส AES-GCM ก่อนส่งผ่าน relay และตัวไฟล์ไม่ผ่าน relay เลย
 - อยากกำหนด relay เอง (เช่น relay ของตัวเอง): ตั้ง `NOSTR_RELAYS` เป็นรายชื่อ `wss://...` คั่นด้วย `,`
-- อยากใช้ Supabase Realtime แทน: ตั้ง `SUPABASE_URL` + `SUPABASE_ANON_KEY` คู่กัน (แอปจะโหลด supabase-js เฉพาะกรณีนี้)
-  และเปิด Realtime → Settings → "Allow public access to channels"
 
 ### 2. TURN server (ไม่บังคับ แต่แนะนำ)
 **TURN คืออะไร:** ปกติไฟล์วิ่งตรงระหว่างเครื่อง แต่บางเครือข่าย (4G บางเจ้า, Wi-Fi บริษัท/มหาวิทยาลัย, NAT แบบเข้มงวด) ไม่ยอมให้ต่อตรง
@@ -53,7 +51,6 @@ API Token อยู่ฝั่งเซิร์ฟเวอร์เท่า�
 | ตัวแปร | จำเป็น | ความหมาย |
 |---|---|---|
 | `NOSTR_RELAYS` | ไม่ | relay ที่ใช้หาเครื่อง (คั่นด้วย `,`) ถ้าไม่ตั้งใช้ชุดค่าเริ่มต้นของ Trystero |
-| `SUPABASE_URL`, `SUPABASE_ANON_KEY` | ไม่ | ใช้ Supabase Realtime แทน Nostr — ต้องตั้งคู่กัน |
 | `ROOM_SALT` | แนะนำ | ข้อความสุ่มยาวๆ ใช้ผสมตอน hash IP |
 | `CLOUDFLARE_TURN_KEY_ID`, `CLOUDFLARE_TURN_API_TOKEN` | ไม่ | TURN ของ Cloudflare (แนะนำ) |
 | `METERED_DOMAIN`, `METERED_API_KEY` | ไม่ | TURN ของ Metered.ca (เช่น `yourapp.metered.live`) |

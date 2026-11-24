@@ -4,10 +4,9 @@
  *  │ เครื่อง A │ ◀───────────────────────────────────────────────────▶ │ เครื่อง B │
  *  └────────┘ ═════════════ ไฟล์วิ่งตรง (WebRTC, เข้ารหัส DTLS) ═══════ └────────┘
  *
- *  ตัวกลางหาเครื่อง (signaling) เลือกตามลำดับ:
- *    1) Supabase Realtime — เฉพาะเมื่อเซิร์ฟเวอร์ตั้ง SUPABASE_URL + SUPABASE_ANON_KEY
- *    2) Trystero/Nostr — ค่าเริ่มต้น ไม่ต้องมีบัญชี (assets/vendor/trystero.min.mjs)
- *    3) BroadcastChannel — ถ้าโหลด 1–2 ไม่ได้ (เห็นเฉพาะแท็บในเบราว์เซอร์เดียวกัน) + แจ้งเตือน
+ *  ตัวกลางหาเครื่อง (signaling):
+ *    - Trystero/Nostr — ไม่ต้องมีบัญชี (assets/vendor/trystero.min.mjs)
+ *    - BroadcastChannel — ถ้าโหลด Trystero ไม่ได้ (เห็นเฉพาะแท็บในเบราว์เซอร์เดียวกัน) + แจ้งเตือน
  *  สำรองเมื่อทุกอย่างล่ม: จับคู่ด้วย QR สองรอบ แลกข้อมูลจับมือผ่านกล้อง ไม่ผ่านเซิร์ฟเวอร์ใดเลย
  */
 (() => {
@@ -162,40 +161,7 @@
     stop() { clearInterval(this.timer); try { this.bc.postMessage({ k: "bye", id: me.id }); this.bc.close(); } catch {} for (const id of this.seen.keys()) this.h.leave(id); this.seen.clear(); }
   }
 
-  class SupaSignal {
-    constructor(client, room, h) { this.client = client; this.room = room; this.h = h; this.seen = new Map(); }
-    start() {
-      const ch = this.ch = this.client.channel("flingfile:" + this.room, { config: { presence: { key: me.id }, broadcast: { self: false } } });
-      ch.on("presence", { event: "sync" }, () => this.sync());
-      ch.on("broadcast", { event: "sig" }, ({ payload }) => { if (payload?.to === me.id) this.h.signal(payload.from, payload.data); });
-      this.timeout = setTimeout(() => this.h.status("error"), RELAY_TIMEOUT);
-      ch.subscribe(async (status) => {
-        if (status === "SUBSCRIBED") { clearTimeout(this.timeout); await ch.track(me); this.h.status("live"); }
-        else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") this.h.status("error");
-        else if (status === "CLOSED") this.h.status("off");
-      });
-    }
-    sync() {
-      if (!this.ch) return;
-      const state = this.ch.presenceState();
-      const now = new Set();
-      for (const [key, metas] of Object.entries(state)) {
-        if (key === me.id || !metas?.length) continue;
-        const peer = metas[metas.length - 1];
-        now.add(key);
-        const old = this.seen.get(key);
-        this.seen.set(key, peer);
-        if (!old) this.h.join(peer);
-        else if (old.name !== peer.name || old.emoji !== peer.emoji || old.device !== peer.device) this.h.update(peer);
-      }
-      for (const id of [...this.seen.keys()]) if (!now.has(id)) { this.seen.delete(id); this.h.leave(id); }
-    }
-    send(to, data) { this.ch.send({ type: "broadcast", event: "sig", payload: { to, from: me.id, data } }); }
-    update() { this.ch?.track(me); }
-    stop() { clearTimeout(this.timeout); try { this.client.removeChannel(this.ch); } catch {} for (const id of this.seen.keys()) this.h.leave(id); this.seen.clear(); }
-  }
-
-  // ค่าเริ่มต้น: Trystero ต่อ WebRTC หากันผ่าน Nostr relay สาธารณะ (ไม่ต้องมีบัญชี/ไม่มีโปรเจกต์ให้โดนพัก)
+  // Trystero ต่อ WebRTC หากันผ่าน Nostr relay สาธารณะ (ไม่ต้องมีบัญชี/ไม่มีโปรเจกต์ให้โดนพัก)
   // ใช้การเชื่อมต่อของ Trystero เป็นท่อส่ง presence + สัญญาณจับมือให้ Conn ของแอปอีกชั้น
   // (ส่วนส่งไฟล์จึงเหมือนเดิมทุกอย่าง)
   const RELAY_TIMEOUT = 10000;
@@ -271,13 +237,12 @@
 
   /* ================= rooms & peers ================= */
   let CFG = { ice_servers: [{ urls: ["stun:stun.l.google.com:19302"] }] };
-  let supa = null;       // Supabase client (ถ้าเซิร์ฟเวอร์ตั้งไว้)
-  let trystero = null;   // โมดูล Trystero (ค่าเริ่มต้น)
+  let trystero = null;   // โมดูล Trystero (null = โหลดไม่ได้ → ใช้ LocalSignal)
   const rooms = new Map();   // roomId -> { signal, label, kind, status }
   const peers = new Map();   // peerId -> { info, rooms:Set, el, conn, queue }
   const via = new Map();     // peerId -> signal ที่ใช้ติดต่อล่าสุด
 
-  const makeSignal = (roomId, h) => supa ? new SupaSignal(supa, roomId, h) : trystero ? new TrysteroSignal(trystero, roomId, h) : new LocalSignal(roomId, h);
+  const makeSignal = (roomId, h) => trystero ? new TrysteroSignal(trystero, roomId, h) : new LocalSignal(roomId, h);
   function joinRoom(roomId, kind, label, factory = makeSignal) {
     if (rooms.has(roomId)) return;
     const room = { kind, label, status: "connecting" };
@@ -1333,7 +1298,7 @@
     toast("กำลังลองเชื่อมต่อใหม่…");
   }
   function netStatus(s) {
-    if (!supa && !trystero) return; // โหมดแท็บเดียว: แถบแจ้งเตือนตอน boot ค้างไว้
+    if (!trystero) return; // โหมดแท็บเดียว: แถบแจ้งเตือนตอน boot ค้างไว้
     if (s === "error") showBanner("เชื่อมต่อระบบค้นหาอุปกรณ์ไม่ได้ — เครื่องอื่นจะยังไม่เห็นเครื่องนี้", [["ลองใหม่", retryNet], ["จับคู่ด้วย QR", qrInvite]]);
     else if (s === "live") hideBanner();
   }
@@ -1407,22 +1372,16 @@
       CFG.turn = !!cfg.turn;
       CFG.nostr_relays = cfg.nostr_relays || [];
       scheduleIceRefresh(600);
-      if (cfg.supabase_url && cfg.supabase_anon_key) {
-        try {
-          if (!window.supabase) await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.100.0/dist/umd/supabase.js");
-          supa = window.supabase.createClient(cfg.supabase_url, cfg.supabase_anon_key, { realtime: { params: { eventsPerSecond: 40 } } });
-        } catch { supa = null; }
-      }
       netRoom = room.room || null;
     } catch {}
-    if (!supa) { try { trystero = await import("./vendor/trystero.min.mjs"); } catch { trystero = null; } }
+    try { trystero = await import("./vendor/trystero.min.mjs"); } catch { trystero = null; }
     if (FORCE_RELAY) {
       bannerBase = CFG.turn
         ? "โหมดทดสอบ TURN: บังคับส่งผ่าน TURN server (ให้อีกเครื่องเปิดลิงก์ที่มี ?relay=1 ด้วย)"
         : "โหมดทดสอบ TURN: เซิร์ฟเวอร์ยังไม่ได้ตั้ง TURN — จะเชื่อมต่อไม่ได้";
       showBanner(bannerBase);
     }
-    if (!supa && !trystero) {
+    if (!trystero) {
       // โหลดระบบค้นหาไม่ได้ → เห็นเฉพาะแท็บในเบราว์เซอร์นี้ + ทางสำรอง QR
       bannerBase = null;
       showBanner("โหลดระบบค้นหาอุปกรณ์ไม่สำเร็จ — ตอนนี้เห็นเฉพาะแท็บอื่นในเบราว์เซอร์นี้", [["โหลดใหม่", () => location.reload()], ["จับคู่ด้วย QR", qrInvite]]);
