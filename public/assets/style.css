@@ -131,6 +131,9 @@ svg { flex: none; }
 
 .banner { max-width: 640px; padding: 10px 16px; border-radius: 12px; font-size: 13.5px; text-align: center; color: var(--warn); background: rgba(251, 191, 36, .10); border: 1px solid rgba(251, 191, 36, .35); animation: rise .6s var(--ease) both; margin: 0 16px; }
 @media (min-width: 680px) { .banner { margin-inline: auto; } }
+.banner-actions { display: inline-flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-left: 10px; vertical-align: middle; }
+.banner .mini-btn { color: var(--text); }
+@media (max-width: 560px) { .banner-actions { display: flex; margin: 8px 0 0; } }
 
 /* ---------- เวที: เรา + อุปกรณ์รอบตัว ---------- */
 .stage { position: relative; flex: 1; min-height: 520px; margin: 8px clamp(8px, 3vw, 32px) 0; }
@@ -352,6 +355,15 @@ body.light :is(.btn.ghost, .pill-btn) {
 .qr-box { flex: none; width: 96px; height: 96px; border-radius: 14px; background: #fff; padding: 7px; border: 1px solid var(--border); }
 .qr-box svg { width: 100%; height: 100%; display: block; }
 .qr-row .m-sub a { display: block; color: var(--accent-text); font-family: var(--mono); font-size: 11.5px; margin-top: 6px; word-break: break-all; text-decoration: none; }
+.qr-big { width: min(100%, 248px); aspect-ratio: 1; margin: 12px auto 4px; border-radius: 14px; background: #fff; padding: 12px; border: 1px solid var(--border); }
+.qr-big svg { width: 100%; height: 100%; display: block; }
+.qr-step { margin: 14px 0 0; }
+.scan-box { position: relative; margin-top: 10px; border-radius: 14px; overflow: hidden; aspect-ratio: 4 / 3; background: var(--control); border: 1px solid var(--border); }
+.scan-box video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.scan-msg { position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 12px; font-size: 12.5px; text-align: center; color: #fff; background: linear-gradient(transparent, rgba(0, 0, 0, .55)); }
+textarea.code-field { min-height: 72px; margin-top: 10px; font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+.code-field.shake { animation: shake .45s; }
+.m-status { min-height: 1.4em; margin-top: 8px; font-size: 13px; color: var(--muted); text-align: center; }
 
 /* ---------- ถาดไฟล์ที่ได้รับ ---------- */
 .tray-toggle { position: fixed; right: 20px; bottom: max(20px, env(safe-area-inset-bottom)); z-index: 20; display: inline-flex; align-items: center; gap: 8px; padding: 10px 12px 10px 16px; border-radius: 999px; font-weight: 700; font-size: 14px; background: var(--surface-solid); border: 1px solid var(--border-strong); box-shadow: var(--shadow); animation: pop .5s var(--spring) both; transition: transform .3s var(--spring); }

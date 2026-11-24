@@ -1,7 +1,7 @@
 """
 Flingfile backend — งานเบามาก เพราะไฟล์วิ่งตรงระหว่างอุปกรณ์ (WebRTC P2P)
 
-  GET /api/config -> ค่าที่ frontend ใช้ต่อ Supabase Realtime (signaling) + ICE servers
+  GET /api/config -> ค่า signaling (Nostr relay / Supabase ถ้าตั้งไว้) + ICE servers
   GET /api/ice    -> STUN/TURN servers (credential TURN ชั่วคราว) สำหรับ WebRTC
   GET /api/room   -> รหัสห้องของ "เครือข่ายเดียวกัน" (hash จาก Public IP ไม่เก็บ IP จริง)
 
@@ -20,18 +20,16 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI(title="Flingfile")
 
-# ค่าเริ่มต้น: โปรเจกต์ Supabase "flingfile" (ใช้แค่ Realtime)
-# publishable key ออกแบบมาให้เปิดเผยได้ (ถูกส่งไปที่เบราว์เซอร์อยู่แล้ว)
-DEFAULT_SUPABASE_URL = "https://qhhdyhepygkfpyhjocuu.supabase.co"
-DEFAULT_SUPABASE_KEY = "sb_publishable_ZqnQ9LAcg4Wfxk8YZGHV3g_mYul2BO9"
-
-# ใช้ค่าจาก env เป็นคู่ก็ต่อเมื่อมี SUPABASE_ANON_KEY (กัน URL เก่าจับคู่ผิดกับ key ใหม่)
-if os.environ.get("SUPABASE_ANON_KEY"):
-    SUPABASE_URL = (os.environ.get("SUPABASE_URL") or DEFAULT_SUPABASE_URL).rstrip("/")
-    SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"]
-else:
-    SUPABASE_URL, SUPABASE_ANON_KEY = DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY
-ROOM_SALT = os.environ.get("ROOM_SALT") or SUPABASE_ANON_KEY[-16:] or "flingfile"
+# Signaling (ให้เครื่องเจอกันและจับมือกัน) ค่าเริ่มต้นใช้ Trystero ผ่าน Nostr relay สาธารณะ
+# ไม่ต้องมีบัญชีหรือ key — ฝั่งเบราว์เซอร์ทำเองทั้งหมด (public/assets/vendor/trystero.min.mjs)
+# ถ้าอยากใช้ Supabase Realtime แทน ให้ตั้ง SUPABASE_URL + SUPABASE_ANON_KEY คู่กัน
+SUPABASE_URL = (os.environ.get("SUPABASE_URL") or "").rstrip("/")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY") or ""
+if not (SUPABASE_URL and SUPABASE_ANON_KEY):
+    SUPABASE_URL = SUPABASE_ANON_KEY = ""
+# NOSTR_RELAYS: (ไม่บังคับ) รายชื่อ relay คั่นด้วย , ถ้าไม่ตั้งใช้ชุดค่าเริ่มต้นของ Trystero
+NOSTR_RELAYS = [u.strip() for u in os.environ.get("NOSTR_RELAYS", "").split(",") if u.strip()]
+ROOM_SALT = os.environ.get("ROOM_SALT") or "flingfile"
 
 
 # ---------- ICE: STUN + TURN ----------
@@ -156,6 +154,7 @@ def config():
         {
             "supabase_url": SUPABASE_URL,
             "supabase_anon_key": SUPABASE_ANON_KEY,
+            "nostr_relays": NOSTR_RELAYS,
             "ice_servers": servers,
             "turn": provider is not None,
         },
