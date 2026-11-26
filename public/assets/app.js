@@ -643,9 +643,17 @@
           this.failTimer = setTimeout(() => { if (pc.connectionState !== "connected") this.kill("failed"); }, 12000);
         }
       };
-      // จัดคิวให้ประมวลผลสัญญาณตามลำดับ (กัน ICE candidate มาก่อน remote description)
+      // จัดคิวให้ประมวลผลสัญญาณตามลำดับที่มาถึง
       this.sigQ = Promise.resolve();
       this.onSignal = (data) => { this.sigQ = this.sigQ.then(() => handle(data)); };
+      // สัญญาณวิ่งผ่าน relay หลายตัวพร้อมกัน จึงมาถึง "สลับลำดับ" ได้: เส้นทาง (ICE candidate) อาจมาก่อน offer/answer
+      // ถ้าเอาไปใส่ตอนยังไม่มี remote description เบราว์เซอร์จะ error แล้วเส้นทางนั้นหายไปเลย
+      // (มือถือ↔คอมที่ใช้ .local ไม่ได้ จะเหลือแต่เส้นทางที่หายไป → ค้าง "กำลังเชื่อมต่อ…")
+      // → เก็บพักไว้ก่อน แล้วค่อยใส่ทันทีที่ได้ remote description
+      let early = [];
+      const addCandidate = async (candidate) => {
+        try { await pc.addIceCandidate(candidate); } catch (e) { if (!ignoreOffer) console.warn("signal error", e); }
+      };
       const handle = async ({ description, candidate }) => {
         try {
           if (description) {
@@ -654,8 +662,11 @@
             if (ignoreOffer) return;
             await pc.setRemoteDescription(description);
             if (description.type === "offer") { await pc.setLocalDescription(); signal({ description: pc.localDescription.toJSON() }); }
+            const pending = early; early = [];
+            for (const c of pending) await addCandidate(c);
           } else if (candidate) {
-            try { await pc.addIceCandidate(candidate); } catch (e) { if (!ignoreOffer) throw e; }
+            if (!pc.remoteDescription) { early.push(candidate); return; }
+            await addCandidate(candidate);
           }
         } catch (e) { console.warn("signal error", e); }
       };
